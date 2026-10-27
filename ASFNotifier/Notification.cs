@@ -24,7 +24,9 @@ internal sealed record Notification(
 	TimeSpan? Duration = null,
 	string? FromVersion = null,
 	string? ToVersion = null,
-	int? Count = null
+	int? Count = null,
+	bool LoginFailed = false, // the reason came from the login result (spec section 8)
+	bool AsfGaveUp = false // a give-up error backs this stop, so a mass stop does not drop it (spec section 5.3)
 );
 
 internal sealed record FormattedMessage(string PlainText, string Html);

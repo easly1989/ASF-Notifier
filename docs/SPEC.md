@@ -156,7 +156,8 @@ sealed record Notification(
     string? RequiredInput = null,    // e.g. "TwoFactorAuthentication"
     TimeSpan? Duration = null,       // disconnected-for / reconnected-after
     string? FromVersion = null, string? ToVersion = null,
-    int? Count = null);              // Suppressed
+    int? Count = null,               // Suppressed
+    bool LoginFailed = false);       // BotStoppedByAsf: the reason came from the login result (section 8)
 ```
 
 The config key for each kind is its name (`"BotStoppedByAsf"`, …); `Suppressed` and `Test`
@@ -240,7 +241,7 @@ request.
 ### 5.1 Connection state per bot
 
 `ConnectionWatcher` keeps, per bot name: `DisconnectedAt`, `DisconnectReason`,
-`DisconnectNotified`, `StopNotified`, and a pending timer. `OnBotDestroy` removes the entry and
+`DisconnectNotified`, and a pending timer. `OnBotDestroy` removes the entry and
 cancels the timer.
 
 - `OnBotLoggedOn(bot)`: cancel the timer. If `DisconnectNotified`, emit `BotReconnected` with
@@ -248,6 +249,9 @@ cancels the timer.
 - `OnBotDisconnected(bot, reason)`: record `DisconnectedAt` (only if not already set for this
   outage) and the reason (only if it is not `OK`/`Invalid`). If `KeepRunning` is `false`, go
   to 5.3; otherwise 5.2.
+- A classified stop ends the outage (5.3 step 2): a stopped bot only disconnects again after it
+  was started again, and a bot started again can be stopped again before it ever logs on (a
+  headless bot that still needs input), which is a new stop.
 
 ### 5.2 Disconnected for N minutes, then reconnected
 
@@ -267,47 +271,85 @@ re-check: in the race above, the stop is reported when the timer fires, up to N 
 
 ### 5.3 Stopped by ASF versus stopped
 
-The hook alone cannot tell these apart (fact 3). The plugin adds three inputs.
+The hook alone cannot tell these apart (fact 3). The plugin adds three inputs, and holds the
+result briefly before it is sent.
 
 **Shutdown flag.** Set by `PosixSignalRegistration.Create` for SIGTERM and SIGINT (the
 handler does not cancel the signal), by `Console.CancelKeyPress` (not cancelled either) and by
 `ProcessExit`. While it is set, no stop event is emitted: `docker stop` and an ASF shutdown
-stop every bot and must not produce a message per bot. ASF's `exit` and `restart` commands
-raise no signal; their stops arrive as `BotStopped`, which is off by default.
+stop every bot and must not produce a message per bot.
+
+**Stop hold.** ASF's `exit` and `restart` commands, the IPC exit and restart endpoints and the
+restart after an auto-update raise no signal. They go through `Program.InitShutdownSequence`,
+which calls `bot.Stop(true)` on every bot and then exits: about 1 second later for `exit`,
+about 6 seconds later for `restart`. Without more, every bot would produce `⏹️`, and a bot with
+`RequiredInput` set a false 🔴. So every `BotStoppedByAsf` / `BotStopped` that passes the
+filter waits 10 seconds (`StopHold`) and is then:
+
+- dropped if the shutdown flag was set meanwhile (the process is going down);
+- dropped, with everything else held, if no bot is left running
+  (`Bot.BotsReadOnly`, `KeepRunning`) and the held stops span more than one bot: every bot
+  stopped together, which is what a shutdown looks like. Exempt from this rule (not from the
+  shutdown flag) is a `BotStoppedByAsf` backed by a give-up `Error` within 60 seconds of `T`
+  (`Notification.AsfGaveUp`): a shutdown's `Stop(true)` logs none, so two bots ASF gave up on
+  at once (a Steam-side change) are both reported. A `BotStoppedByAsf` from `RequiredInput`
+  alone, with no such error (a bot waiting for input when ASF exits), is still dropped;
+- sent otherwise. One bot stopping is never a mass stop, so the only bot of a single-bot
+  instance is still reported (its shutdown is caught by the flag instead).
+
+The hold is preferred over reading `Program.ShutdownSequenceInitialized` by reflection: that
+member is internal, may change in any ASF release, and would fail silently. The cost is a 10
+second delay on stop messages, and that stopping every bot within 10 seconds (for example
+`stop ASF`) sends no `BotStopped`.
 
 **NLog tap.** An in-process NLog target that records, per bot logger name, the latest
 `Error`-level entry written from one of ASF's give-up sites: `HandleLoginResult()`,
 `OnLoggedOff()`, `OnLoggedOn()`, `OnConnected()`, `RequestInput()`. ASF writes every entry as
 `"{method}() {message}"`; the method name is not localised. It also records the latest
-`HandleLoginResult()` / `OnLoggedOff()` entry at any level, for the reason. It stores only
-time, method and the parsed `EResult`, never forwards or re-logs log text.
+`HandleLoginResult()` / `OnLoggedOff()` entry at any level that names an `EResult`, for the
+reason (an entry without one, such as the final "Received InvalidPassword error code … times"
+in a language that translates it, must not wipe the reason logged by the attempt before). It
+stores only time, method and the parsed `EResult`, never forwards or re-logs log text.
 
-- Registration: add a rule from `Info` to `Fatal` for all loggers to the current
-  `LogManager.Configuration`, then call `LogManager.ReconfigExistingLoggers()` so loggers that
-  already exist pick the target up.
+- Registration: insert a rule from `Info` to `Fatal` for all loggers at the top of the current
+  `LogManager.Configuration` (so a `final` rule in a custom `NLog.config` cannot hide entries
+  from it), then call `LogManager.ReconfigExistingLoggers()` so loggers that already exist pick
+  the target up. Each registration uses a new target instance, because the configuration being
+  replaced closes the targets it held.
 - Lifecycle: subscribe to `LogManager.ConfigurationChanged` and register the target again on
-  the new configuration (ASF or the user can replace the NLog config at runtime).
+  the new configuration (ASF or the user can replace the NLog config at runtime). NLog 6.2.1
+  raises that event inside its configuration lock (`LogFactory.Configuration`'s setter), so
+  the handler only queues the re-registration on the thread pool; the queued work skips a
+  configuration that is no longer the active one. Entries written in the few milliseconds in
+  between are missed.
 - `EResult` parsing: split the message into tokens on non-alphanumeric characters and take
   the first token for which `Enum.TryParse<EResult>(token, ignoreCase: false, out r)`
   succeeds, the token is not numeric, `Enum.IsDefined(r)` holds, and `r` is neither `OK` nor
   `Invalid`. `EResult` values are formatted by name, so this works in every ASF language.
 
 **Classification**, run when a stop is detected (`KeepRunning == false` in
-`OnBotDisconnected`, or the 5.2 timer finding it so), with `T` = the recorded
-`DisconnectedAt`:
+`OnBotDisconnected`, or the 5.2 timer finding it so), with `T` = the time of the disconnect
+that revealed the stop: the hook's own time, or for the timer the latest recorded disconnect.
+Not the first disconnect of the outage: ASF may retry a failing login for minutes (rate-limit
+cooldowns) before it gives up, and the give-up error sits next to the last disconnect. Not the
+time of classifying either.
 
 1. Shutdown flag set → nothing.
-2. `StopNotified` already set for this stop → nothing.
+2. Each stop is reported once: `Stop()` disconnects at most once per connection, so the first
+   classified stop ends the bot's outage and forgets its tap entries; a later stop disconnect
+   can only follow a new start. (Ticket #4's timer is cancelled when a stop is classified.)
 3. `bot.RequiredInput != None` → **`BotStoppedByAsf`** with `RequiredInput` set.
 4. A tap `Error` entry for that bot whose time is within 60 seconds of `T` (before or after)
    → **`BotStoppedByAsf`**. `Reason` = the hook's `EResult` if it is not `OK`/`Invalid`,
    else the `EResult` parsed from that entry, else the one from the latest
    `HandleLoginResult()` / `OnLoggedOff()` entry within 60 seconds of `T`, else none.
 5. Otherwise → **`BotStopped`** ("stopped without an ASF error"): the `stop` command, a config
-   edit, a rename, `ShutdownOnFarmingFinished`, ASF `exit`/`restart`.
+   edit, a rename, `ShutdownOnFarmingFinished` (ASF `exit`/`restart` are dropped by the stop
+   hold).
 
-Then set `StopNotified`. Ticket #3 confirms the classification on a real instance before it is
-relied on.
+The tap entries of a bot are also forgotten when it logs on and when it is destroyed, so an
+error from before a successful log-on never explains a later stop. Ticket #3 confirms the
+classification on a real instance before it is relied on.
 
 ### 5.4 Farming
 
@@ -511,11 +553,15 @@ returns at once.
   (global, per bot, env var), filter, rate limiter and dedupe (with a fake `TimeProvider`),
   formatter (every row of section 8, HTML escaping), `ConnectionWatcher` state machine (fake
   time, fake bot state), stop classifier (synthetic tap entries, shutdown flag, required
-  input), `EResult` token parsing, the `!notifytest` decision function, the send queue
+  input), the stop hold (one bot, every bot together, shutdown meanwhile), `EResult` token
+  parsing, the `!notifytest` decision function, the send queue
   (ordering, `DropOldest`, flush bound), and `MatrixChannel` against a **fake
   `HttpMessageHandler`** that records requests and replays canned responses (200, 429 with
   `retry_after_ms`, 401, 403, 500, timeout, degraded and recovery).
-- **What is not unit-tested:** the thin ASF adapter and the NLog registration. They are
+- **NLog tap:** tested against a real NLog `LogFactory` with an in-memory configuration,
+  including a configuration reload and a `final` rule. The tap takes the `LogFactory`; the
+  plugin passes `LogManager.LogFactory`.
+- **What is not unit-tested:** the thin ASF adapter and the signal registration. They are
   verified by hand against a real ASF 6.3.10.6 with a test bot and a test Matrix room; each
   ticket lists the manual check.
 - **Shape rule:** ASF is referenced with `ExcludeAssets="all" Private="false"`; keeping ASF
@@ -544,6 +590,19 @@ Based on the template's workflows, trimmed:
 
 - **Stop classification (section 5.3)** is designed from the source; ticket #3 verifies it on
   a real instance before it is relied on.
+- **A stop while not connected sends nothing.** `Bot.Stop()` disconnects only when
+  `SteamClient.IsConnected` (fact 4), so `stop` during a reconnect wait or a rate-limit
+  cooldown fires no hook. Until ticket #4 nothing is sent; with #4 the pending disconnect timer
+  finds `KeepRunning == false` and reports the stop up to N minutes late.
+- **Stops coinciding with a shutdown are not reported** (the stop hold above), including a
+  genuine 🔴 in the last 10 seconds before ASF exits. When every bot stops together without a
+  shutdown, `BotStopped` and input-only 🔴 are dropped; a 🔴 backed by a give-up error is
+  still sent.
+- **Bot config edit.** `OnConfigChanged` calls `Stop(true)` and then `InitStart()`, which starts
+  the bot again in the background. The disconnect callback may therefore reach the hook with
+  `KeepRunning` already `true` again, which is a plain disconnect (5.2), not a stop: no
+  `BotStopped`, and nothing at all if the bot logs on within N minutes. Ticket #3's manual
+  check 4 settles which one happens.
 - The original assumption that `OnBotDisconnected`'s `EResult` and `KeepRunning == false` are
   enough to detect "login failed, ASF stopped the bot" does not hold (fact 3); the NLog tap
   in section 5.3 is the replacement, and it is the only NLog use in v1.
