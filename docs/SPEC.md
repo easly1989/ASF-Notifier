@@ -247,23 +247,44 @@ cancels the timer.
 - `OnBotLoggedOn(bot)`: cancel the timer. If `DisconnectNotified`, emit `BotReconnected` with
   `Duration = now - DisconnectedAt`. Reset the state.
 - `OnBotDisconnected(bot, reason)`: record `DisconnectedAt` (only if not already set for this
-  outage) and the reason (only if it is not `OK`/`Invalid`). If `KeepRunning` is `false`, go
-  to 5.3; otherwise 5.2.
+  outage), the time of this disconnect as the latest one, and the reason (only if it is not
+  `OK`/`Invalid`). If `KeepRunning` is `false`, go to 5.3; otherwise 5.2.
 - A classified stop ends the outage (5.3 step 2): a stopped bot only disconnects again after it
   was started again, and a bot started again can be stopped again before it ever logs on (a
-  headless bot that still needs input), which is a new stop.
+  headless bot that still needs input), which is a new stop. An outage that ends with a stop or
+  `OnBotDestroy` sends no `BotReconnected`, even after a `BotDisconnected`: the stop message
+  (or the bot's removal) closes it.
+- Known limit: a bot stopped while not connected, after its `BotDisconnected` was sent, fires no
+  hook (`Stop()` disconnects only a connected client, fact 4), and the outage's one timer has
+  already fired. The outage stays open; a later `start` and log-on then sends
+  `BotReconnected` with a duration that includes the stopped time. See section 14.
+
+The state is one lock per watcher; the hooks and the timer callback run on arbitrary threads.
+The timer callback reads the bot (`KeepRunning`, `IsConnectedAndLoggedOn`, `RequiredInput`)
+outside the lock, then acts only if the outage it was started for is still the current one, and
+emits while holding the lock: a log-on racing it waits, so its `BotReconnected` is always queued
+after the `BotDisconnected`. Lock order: the watcher lock may be held while taking the tap's lock
+and, through the emit, the filter, the stop hold and the send queue; none of them calls back
+into the watcher. An exception in the callback is logged through `ASF.ArchiLogger` and never
+escapes the timer thread.
 
 ### 5.2 Disconnected for N minutes, then reconnected
 
 If `bot.KeepRunning` is still `true`, ASF will reconnect. Start a timer for
-`DisconnectedNotifyAfterMinutes` (default 5), only if none is pending, so the clock runs from
-the first disconnect of an outage. When it fires:
+`DisconnectedNotifyAfterMinutes` (default 5), only if the outage has none yet, so the clock runs
+from the first disconnect of an outage. One timer per outage: once it has fired and sent
+`BotDisconnected`, later disconnects of the same outage (every failed reconnect attempt is one)
+start no other, so an outage is reported once however long it lasts. When it fires:
 
 - `bot.KeepRunning == false` → the bot was stopped meanwhile (for example Steam dropped the
-  connection before ASF's `Stop()` ran, so `Stop()` fired no hook): go to 5.3 with the
-  recorded `DisconnectedAt`.
-- `bot.IsConnectedAndLoggedOn == false` → emit `BotDisconnected` (`Duration` = elapsed,
-  `Reason` = last recorded reason) and set `DisconnectNotified`.
+  connection before ASF's `Stop()` ran, so `Stop()` fired no hook): go to 5.3 with `T` = the
+  latest recorded disconnect and no hook reason (`OK`), so the reason comes from the tap.
+- `bot.IsConnectedAndLoggedOn == false` → emit `BotDisconnected` (`Duration` = elapsed since
+  `DisconnectedAt`, `Reason` = last recorded reason). `DisconnectNotified` is set only if the
+  emit accepted it: it passed the filter (section 4.4; from ticket #8 also dedupe and the hourly
+  cap, 4.5) and was queued. With `BotDisconnected` off, or the message dropped, the outage sends
+  no `BotReconnected` either, and is not offered again.
+- ASF no longer has the bot → nothing; the outage ends.
 - otherwise nothing (a log-on callback was missed; reset).
 
 A short outage that recovers within N minutes produces no message at all. There is no other
@@ -337,7 +358,7 @@ time of classifying either.
 1. Shutdown flag set → nothing.
 2. Each stop is reported once: `Stop()` disconnects at most once per connection, so the first
    classified stop ends the bot's outage and forgets its tap entries; a later stop disconnect
-   can only follow a new start. (Ticket #4's timer is cancelled when a stop is classified.)
+   can only follow a new start. The outage's disconnect timer (5.2) is cancelled with it.
 3. `bot.RequiredInput != None` → **`BotStoppedByAsf`** with `RequiredInput` set.
 4. A tap `Error` entry for that bot whose time is within 60 seconds of `T` (before or after)
    → **`BotStoppedByAsf`**. `Reason` = the hook's `EResult` if it is not `OK`/`Invalid`,
@@ -476,7 +497,9 @@ and versions HTML-escaped. Bot name = ASF bot name (the config file name).
 | `Test` | `🧪 ASF-Notifier test from bot1 — delivery works` | `🧪 <b>ASF-Notifier</b> test from <b>bot1</b> — delivery works` |
 
 "Login failed" is used when the reason came from `HandleLoginResult()` or the hook. Durations:
-whole minutes below 2 hours ("1 minute", "12 minutes"), then hours and minutes ("3 h 5 min").
+whole minutes below 2 hours ("1 minute", "12 minutes"), then hours and minutes ("3 h 5 min",
+"2 h 0 min"), rounded to the nearest minute so a timer firing a few milliseconds early still
+reads as the configured threshold.
 A reason in parentheses is omitted when unknown.
 
 ## 9. `!notifytest` command
@@ -592,8 +615,17 @@ Based on the template's workflows, trimmed:
   a real instance before it is relied on.
 - **A stop while not connected sends nothing.** `Bot.Stop()` disconnects only when
   `SteamClient.IsConnected` (fact 4), so `stop` during a reconnect wait or a rate-limit
-  cooldown fires no hook. Until ticket #4 nothing is sent; with #4 the pending disconnect timer
-  finds `KeepRunning == false` and reports the stop up to N minutes late.
+  cooldown fires no hook. The pending disconnect timer (5.2) finds `KeepRunning == false` and
+  reports the stop up to N minutes late. If the timer already fired for that outage, the stop
+  is not reported, the outage stays open, and a later `start` and log-on sends
+  `BotReconnected` with a duration that counts the stopped time (5.1). No hook fires between
+  that `stop` and the next `start`: `Start()` and `Stop()` call no plugin interface, and
+  `OnBotLoggedOn` cannot tell a restart from a reconnect. The only trace is ASF's own Info
+  line from `Stop()`, which the NLog tap could record. Using it was rejected for v1:
+  - checking it at log-on would suppress the `BotReconnected` and leave the `BotDisconnected`
+    unanswered;
+  - acting on it when it is logged needs a deferred callback from the tap, which races the
+    hook's own classification of an ordinary stop and would need its own report-once rule.
 - **Stops coinciding with a shutdown are not reported** (the stop hold above), including a
   genuine 🔴 in the last 10 seconds before ASF exits. When every bot stops together without a
   shutdown, `BotStopped` and input-only 🔴 are dropped; a 🔴 backed by a give-up error is
