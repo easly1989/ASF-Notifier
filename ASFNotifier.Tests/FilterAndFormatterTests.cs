@@ -54,6 +54,37 @@ internal sealed class FilterAndFormatterTests {
 	}
 
 	[TestMethod]
+	[DataRow(NotificationKind.BotDisconnected, "NoConnection", 5, "🟠 bot1 — disconnected for 5 minutes (NoConnection)", "🟠 <b>bot1</b> — disconnected for 5 minutes (<code>NoConnection</code>)", DisplayName = "Disconnected")]
+	[DataRow(NotificationKind.BotDisconnected, null, 5, "🟠 bot1 — disconnected for 5 minutes", "🟠 <b>bot1</b> — disconnected for 5 minutes", DisplayName = "Disconnected, no reason")]
+	[DataRow(NotificationKind.BotReconnected, null, 12, "🟢 bot1 — reconnected after 12 minutes", "🟢 <b>bot1</b> — reconnected after 12 minutes", DisplayName = "Reconnected")]
+	internal void FormatterConnectionRows(NotificationKind kind, string? reason, int minutes, string plain, string html) {
+		FormattedMessage message = Formatter.Format(new Notification(kind, "bot1", DateTimeOffset.UnixEpoch, reason, Duration: TimeSpan.FromMinutes(minutes)));
+
+		Assert.AreEqual(plain, message.PlainText);
+		Assert.AreEqual(html, message.Html);
+	}
+
+	[TestMethod]
+	internal void FormatterEscapesConnectionValuesInHtmlOnly() {
+		FormattedMessage message = Formatter.Format(new Notification(NotificationKind.BotDisconnected, "a<b>", DateTimeOffset.UnixEpoch, "x&y", Duration: TimeSpan.FromMinutes(5)));
+
+		Assert.AreEqual("🟠 a<b> — disconnected for 5 minutes (x&y)", message.PlainText);
+		Assert.AreEqual("🟠 <b>a&lt;b&gt;</b> — disconnected for 5 minutes (<code>x&amp;y</code>)", message.Html);
+	}
+
+	[TestMethod]
+	[DataRow(60.0, "1 minute")]
+	[DataRow(720.0, "12 minutes")]
+	[DataRow(329.0, "5 minutes", DisplayName = "Rounds down below half a minute")]
+	[DataRow(270.0, "5 minutes", DisplayName = "Rounds up from half a minute")]
+	[DataRow(299.99, "5 minutes", DisplayName = "A timer firing early")]
+	[DataRow(7140.0, "119 minutes")]
+	[DataRow(7200.0, "2 h 0 min")]
+	[DataRow(11100.0, "3 h 5 min")]
+	[DataRow(97180.0, "27 h 0 min", DisplayName = "Rounding carries into the hour")]
+	internal void DurationText(double seconds, string expected) => Assert.AreEqual(expected, Formatter.Duration(TimeSpan.FromSeconds(seconds)));
+
+	[TestMethod]
 	internal void FormatterTestRow() {
 		FormattedMessage message = Formatter.Format(Of(NotificationKind.Test));
 

@@ -17,8 +17,23 @@ internal static class Formatter {
 			NotificationKind.BotStoppedByAsf when notification.Reason is { } reason => new FormattedMessage($"🔴 {bot} — ASF stopped the bot ({reason})", $"🔴 {boldBot} — ASF stopped the bot ({Code(reason)})"),
 			NotificationKind.BotStoppedByAsf => new FormattedMessage($"🔴 {bot} — ASF stopped the bot", $"🔴 {boldBot} — ASF stopped the bot"),
 			NotificationKind.BotStopped => new FormattedMessage($"⏹️ {bot} — bot stopped", $"⏹️ {boldBot} — bot stopped"),
+			NotificationKind.BotDisconnected when notification.Reason is { } reason => new FormattedMessage($"🟠 {bot} — disconnected for {Duration(notification.Duration)} ({reason})", $"🟠 {boldBot} — disconnected for {Duration(notification.Duration)} ({Code(reason)})"),
+			NotificationKind.BotDisconnected => new FormattedMessage($"🟠 {bot} — disconnected for {Duration(notification.Duration)}", $"🟠 {boldBot} — disconnected for {Duration(notification.Duration)}"),
+			NotificationKind.BotReconnected => new FormattedMessage($"🟢 {bot} — reconnected after {Duration(notification.Duration)}", $"🟢 {boldBot} — reconnected after {Duration(notification.Duration)}"),
 			NotificationKind.Test => new FormattedMessage($"🧪 ASF-Notifier test from {bot} — delivery works", $"🧪 <b>ASF-Notifier</b> test from {boldBot} — delivery works"),
 			_ => throw new NotSupportedException(notification.Kind.ToString())
+		};
+	}
+
+	// Spec section 8: whole minutes below 2 hours, then hours and minutes. Rounded, so a timer firing a few milliseconds
+	// early still reads as the configured threshold
+	internal static string Duration(TimeSpan? duration) {
+		long minutes = (long) Math.Round((duration ?? TimeSpan.Zero).TotalMinutes, MidpointRounding.AwayFromZero);
+
+		return minutes switch {
+			1 => "1 minute",
+			< 120 => $"{minutes} minutes",
+			_ => $"{minutes / 60} h {minutes % 60} min"
 		};
 	}
 

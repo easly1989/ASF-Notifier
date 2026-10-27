@@ -16,7 +16,7 @@ namespace ASFNotifier;
 // ASF exports every IPlugin type by convention, no [Export] attribute needed
 #pragma warning disable CA1812 // ASF uses this class during runtime
 [UsedImplicitly]
-internal sealed class ASFNotifier : IASF, IBot, IBotCommand2, IBotConnection, IDisposable, IGitHubPluginUpdates {
+internal sealed class ASFNotifier : IASF, IBot, IBotCommand2, IBotConnection, IDisposable, IGitHubPluginUpdates, IWatcherHost {
 	private readonly StopHold Hold = new();
 
 	private ITimer? HoldTimer;
@@ -44,6 +44,7 @@ internal sealed class ASFNotifier : IASF, IBot, IBotCommand2, IBotConnection, ID
 			Queue = null;
 			Tap?.Dispose();
 			Tap = null;
+			Watcher?.Dispose();
 			Watcher = null;
 			HoldTimer?.Dispose();
 			HoldTimer = null;
@@ -55,7 +56,7 @@ internal sealed class ASFNotifier : IASF, IBot, IBotCommand2, IBotConnection, ID
 				channel = new MatrixChannel(MatrixChannel.CreateHttpClient(), homeserver, roomId, token, TimeProvider.System, new AsfLog());
 				Queue = new SendQueue(channel, new AsfLog(), TimeProvider.System);
 				Tap = new GiveUpLogTap(LogManager.LogFactory, TimeProvider.System);
-				Watcher = new ConnectionWatcher(Tap, () => IsShuttingDown, TimeProvider.System);
+				Watcher = new ConnectionWatcher(Tap, () => IsShuttingDown, TimeProvider.System, TimeSpan.FromMinutes(settings.DisconnectedNotifyAfterMinutes), this);
 				HoldTimer = TimeProvider.System.CreateTimer(_ => ReleaseHeldStops(), null, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
 				RegisterShutdownSignals();
 
@@ -79,6 +80,7 @@ internal sealed class ASFNotifier : IASF, IBot, IBotCommand2, IBotConnection, ID
 		SigInt?.Dispose();
 		SigTerm?.Dispose();
 		HoldTimer?.Dispose();
+		Watcher?.Dispose();
 		Queue?.Dispose();
 		Tap?.Dispose();
 	}
@@ -124,7 +126,7 @@ internal sealed class ASFNotifier : IASF, IBot, IBotCommand2, IBotConnection, ID
 			}
 
 			bool keepRunning = bot.KeepRunning;
-			string? requiredInput = bot.RequiredInput == ASF.EUserInputType.None ? null : bot.RequiredInput.ToString();
+			string? requiredInput = RequiredInputOf(bot);
 			Notification? notification = watcher.OnDisconnected(bot.BotName, reason, keepRunning, requiredInput);
 
 			ASF.ArchiLogger.LogGenericDebug($"{bot.BotName} disconnected: reason {reason}, KeepRunning {keepRunning}, RequiredInput {requiredInput ?? "None"}, shutting down {IsShuttingDown} → {notification?.Kind.ToString() ?? "nothing"}{(notification?.Reason != null ? $" ({notification.Reason})" : "")}", nameof(ASFNotifier));
@@ -143,7 +145,7 @@ internal sealed class ASFNotifier : IASF, IBot, IBotCommand2, IBotConnection, ID
 		ArgumentNullException.ThrowIfNull(bot);
 
 		try {
-			Watcher?.OnLoggedOn(bot.BotName);
+			Emit(Watcher?.OnLoggedOn(bot.BotName));
 		} catch (Exception e) {
 			ASF.ArchiLogger.LogGenericException(e);
 		}
@@ -158,6 +160,19 @@ internal sealed class ASFNotifier : IASF, IBot, IBotCommand2, IBotConnection, ID
 	}
 
 	internal static bool IsMasterOrHigher(EAccess access) => access >= EAccess.Master;
+
+	// Disconnect timer, on a timer thread
+	void IWatcherHost.Emit(Notification notification) {
+		ASF.ArchiLogger.LogGenericDebug($"{notification.BotName} disconnect timer → {notification.Kind}{(notification.Reason != null ? $" ({notification.Reason})" : "")}", nameof(ASFNotifier));
+
+		Emit(notification);
+	}
+
+	BotStatus? IWatcherHost.GetStatus(string botName) => Bot.BotsReadOnly?.GetValueOrDefault(botName) is { } bot ? new BotStatus(bot.KeepRunning, bot.IsConnectedAndLoggedOn, RequiredInputOf(bot)) : null;
+
+	void IWatcherHost.OnError(Exception exception) => ASF.ArchiLogger.LogGenericException(exception);
+
+	private static string? RequiredInputOf(Bot bot) => bot.RequiredInput == ASF.EUserInputType.None ? null : bot.RequiredInput.ToString();
 
 	private void Emit(Notification? notification) {
 		if ((notification == null) || (Settings == null) || !Filter.Allows(notification, Settings)) {
