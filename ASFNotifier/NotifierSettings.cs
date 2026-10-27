@@ -40,12 +40,6 @@ internal sealed class NotifierSettings {
 			return Idle($"{ConfigKey} in ASF.json is not a JSON object");
 		}
 
-		if (!ReadBool(block, "Enabled", true, log)) {
-			log.Info($"{ConfigKey} is disabled in ASF.json, the plugin stays idle");
-
-			return Idle("Enabled is false", false);
-		}
-
 		string? homeserver = null;
 		string? roomId = null;
 		string? jsonToken = null;
@@ -56,15 +50,29 @@ internal sealed class NotifierSettings {
 			jsonToken = ReadString(matrix, "AccessToken");
 		}
 
+		bool environmentWins = !string.IsNullOrWhiteSpace(environmentToken);
+
+		// IPC serves ASF.json whatever the plugin does with it, so warn before any early return
+		if (jsonToken != null) {
+			log.Warning(environmentWins
+				? "ASF.json still contains Matrix.AccessToken; it is ignored but still served by GET /Api/ASF; delete it"
+				: $"The Matrix access token in ASF.json is exposed through ASF's IPC (GET /Api/ASF and ASF-ui); move it to the environment variable {EnvironmentTokenVariable}");
+		}
+
+		if (!ReadBool(block, "Enabled", true, log)) {
+			log.Info($"{ConfigKey} is disabled in ASF.json, the plugin stays idle");
+
+			return Idle("Enabled is false", false);
+		}
+
 		string? token;
 
-		if (!string.IsNullOrWhiteSpace(environmentToken)) {
-			token = environmentToken.Trim();
+		if (environmentWins) {
+			token = environmentToken?.Trim();
 			log.Info($"Matrix access token taken from the environment variable {EnvironmentTokenVariable}");
 		} else if (jsonToken != null) {
 			token = jsonToken;
 			log.Info("Matrix access token taken from ASF.json");
-			log.Warning($"The Matrix access token in ASF.json is exposed through ASF's IPC (GET /Api/ASF and ASF-ui); move it to the environment variable {EnvironmentTokenVariable}");
 		} else {
 			token = null;
 		}
@@ -86,11 +94,19 @@ internal sealed class NotifierSettings {
 		string? reason = missing.Count > 0 ? $"missing {string.Join(", ", missing)}" : null;
 
 		if (homeserver != null) {
-			if (!Uri.TryCreate(homeserver, UriKind.Absolute, out Uri? uri) || ((uri.Scheme != Uri.UriSchemeHttps) && (uri.Scheme != Uri.UriSchemeHttp))) {
-				reason = reason == null ? "invalid Matrix.HomeserverUrl (expected an http or https URL)" : $"{reason}; invalid Matrix.HomeserverUrl (expected an http or https URL)";
+			if (!Uri.TryCreate(homeserver, UriKind.Absolute, out Uri? uri) || ((uri.Scheme != Uri.UriSchemeHttps) && (uri.Scheme != Uri.UriSchemeHttp)) || (uri.Query.Length > 0) || (uri.Fragment.Length > 0) || (uri.UserInfo.Length > 0)) {
+				reason = Append(reason, "invalid Matrix.HomeserverUrl (expected an http or https URL without credentials, query or fragment)");
 			} else if (uri.Scheme == Uri.UriSchemeHttp) {
 				log.Warning("Matrix.HomeserverUrl uses http://, the access token travels unencrypted; use https:// unless the homeserver is on a trusted LAN");
 			}
+		}
+
+		if ((roomId != null) && !roomId.StartsWith('!')) {
+			reason = Append(reason, "invalid Matrix.RoomId (expected a room ID starting with '!', room aliases are not supported)");
+		}
+
+		if ((token != null) && token.Any(static c => char.IsControl(c) || char.IsWhiteSpace(c))) {
+			reason = Append(reason, "invalid Matrix.AccessToken (must not contain whitespace or control characters)");
 		}
 
 		if (reason != null) {
@@ -106,6 +122,8 @@ internal sealed class NotifierSettings {
 			RoomId = roomId
 		};
 	}
+
+	private static string Append(string? reason, string problem) => reason == null ? problem : $"{reason}; {problem}";
 
 	private static bool ReadBool(JsonElement parent, string key, bool defaultValue, INotifierLog log) {
 		if (!parent.TryGetProperty(key, out JsonElement value)) {

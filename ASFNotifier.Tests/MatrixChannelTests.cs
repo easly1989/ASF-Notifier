@@ -50,6 +50,13 @@ internal sealed class MatrixChannelTests {
 	}
 
 	[TestMethod]
+	internal void ResponseBufferIsCappedAt64KiB() {
+		using HttpClient client = MatrixChannel.CreateHttpClient();
+
+		Assert.AreEqual(64 * 1024, client.MaxResponseContentBufferSize);
+	}
+
+	[TestMethod]
 	internal async Task RequestShape() {
 		using Rig rig = new();
 		(MatrixChannel channel, FakeHandler handler, _, _) = rig;
@@ -89,6 +96,10 @@ internal sealed class MatrixChannelTests {
 	[DataRow("not json", "300", 60000)]
 	[DataRow("""{"retry_after_ms": 2000}""", "7", 2000)]
 	[DataRow("""{"errcode": "M_LIMIT_EXCEEDED"}""", null, -1)]
+	[DataRow("""{"retry_after_ms": 1e20}""", null, 60000)]
+	[DataRow("""{"retry_after_ms": -1e20}""", null, 0)]
+	[DataRow("""{"retry_after_ms": 1e400}""", null, 60000)]
+	[DataRow("""{"retry_after_ms": 1e400}""", "7", 60000)]
 	internal async Task RateLimitMapsToRetryAfterCappedAtSixtySeconds(string body, string? retryAfterHeader, int expectedMs) {
 		using Rig rig = new();
 		(MatrixChannel channel, FakeHandler handler, _, _) = rig;

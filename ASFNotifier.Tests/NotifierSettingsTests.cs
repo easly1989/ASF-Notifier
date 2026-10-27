@@ -219,5 +219,66 @@ internal sealed class NotifierSettingsTests {
 		Assert.IsTrue(log.Infos.Any(static line => line.Contains("ASF.json", StringComparison.Ordinal)));
 		Assert.IsFalse(Leaks(log, TestData.Token));
 	}
+
+	[TestMethod]
+	internal void EnvironmentAndJsonTokenBothSetWarnsOnceWithIgnoredWording() {
+		FakeLog log = new();
+
+		NotifierSettings settings = TestData.Settings("""{"ASFNotifier": {"Matrix": {"HomeserverUrl": "https://matrix.example.org", "RoomId": "!room:example.org", "AccessToken": "json-token"}}}""", "env-token", log);
+
+		Assert.AreEqual("env-token", settings.AccessToken);
+		Assert.HasCount(1, log.Warnings);
+		StringAssert.Contains(log.Warnings[0], "ignored but still served by GET /Api/ASF", StringComparison.Ordinal);
+		Assert.IsFalse(Leaks(log, "json-token", "env-token"));
+	}
+
+	[TestMethod]
+	internal void JsonTokenWarnsEvenWhenDisabled() {
+		FakeLog log = new();
+
+		TestData.Settings("""{"ASFNotifier": {"Enabled": false, "Matrix": {"AccessToken": "json-token"}}}""", null, log);
+
+		Assert.HasCount(1, log.Warnings);
+		Assert.IsFalse(Leaks(log, "json-token"));
+	}
+
+	[TestMethod]
+	[DataRow("bad token")]
+	[DataRow("bad\ntoken")]
+	[DataRow("bad\u0001token")]
+	internal void TokenWithWhitespaceOrControlCharactersIsRejected(string token) {
+		FakeLog log = new();
+
+		NotifierSettings settings = TestData.Settings(TestData.ConfigJson(), token, log);
+
+		Assert.IsFalse(settings.IsConfigured);
+		Assert.HasCount(1, log.Errors);
+		StringAssert.Contains(log.Errors[0], "Matrix.AccessToken", StringComparison.Ordinal);
+		Assert.IsFalse(Leaks(log, "bad"));
+	}
+
+	[TestMethod]
+	[DataRow("https://matrix.example.org/?a=b")]
+	[DataRow("https://matrix.example.org/#frag")]
+	[DataRow("https://user:pw@matrix.example.org")]
+	internal void HomeserverWithQueryFragmentOrUserInfoIsRejected(string url) {
+		FakeLog log = new();
+
+		NotifierSettings settings = TestData.Settings($$$"""{"ASFNotifier": {"Matrix": {"HomeserverUrl": "{{{url}}}", "RoomId": "!room:example.org"}} }""", TestData.Token, log);
+
+		Assert.IsFalse(settings.IsConfigured);
+		Assert.HasCount(1, log.Errors);
+		Assert.IsFalse(Leaks(log, "user:pw", "#frag", "a=b"));
+	}
+
+	[TestMethod]
+	internal void RoomAliasIsRejectedWithAClearError() {
+		FakeLog log = new();
+
+		NotifierSettings settings = TestData.Settings($$$"""{"ASFNotifier": {"Matrix": {"HomeserverUrl": "{{{TestData.Homeserver}}}", "RoomId": "#alias:example.org"}} }""", TestData.Token, log);
+
+		Assert.IsFalse(settings.IsConfigured);
+		StringAssert.Contains(log.Errors.Single(), "alias", StringComparison.Ordinal);
+	}
 }
 #pragma warning restore CA1812 // MSTest uses this class during runtime

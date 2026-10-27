@@ -171,5 +171,16 @@ internal sealed class NotifyTestTests {
 		Assert.IsFalse(replies.Any(static reply => reply == null || reply.Contains(TestData.Token, StringComparison.Ordinal)));
 		Assert.IsFalse(log.All.Any(static line => line.Contains(TestData.Token, StringComparison.Ordinal)));
 	}
+
+	[TestMethod]
+	internal async Task ParallelCallsSendOnlyOnce() {
+		(NotifyTestCommand command, FakeChannel channel, _) = Create();
+
+		string?[] replies = await Task.WhenAll(Enumerable.Range(0, 50).Select(_ => Task.Run(() => command.HandleAsync("bot1", "notifytest", true, CancellationToken.None)))).ConfigureAwait(false);
+
+		Assert.HasCount(1, channel.Calls);
+		Assert.AreEqual(1, replies.Count(static reply => reply?.Contains("sent to Matrix", StringComparison.Ordinal) == true));
+		Assert.AreEqual(49, replies.Count(static reply => reply?.Contains("Please wait", StringComparison.Ordinal) == true));
+	}
 }
 #pragma warning restore CA1812 // MSTest uses this class during runtime

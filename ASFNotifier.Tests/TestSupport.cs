@@ -62,7 +62,7 @@ internal sealed class FakeHandler : HttpMessageHandler {
 	protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) {
 		string body = request.Content == null ? "" : await request.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
 
-		Requests.Add(new RecordedRequest(request.Method, request.RequestUri?.OriginalString ?? "", request.Headers.Authorization?.ToString(), request.Content?.Headers.ContentType?.MediaType, body));
+		Requests.Add(new RecordedRequest(request.Method, request.RequestUri?.AbsoluteUri ?? "", request.Headers.Authorization?.ToString(), request.Content?.Headers.ContentType?.MediaType, body));
 
 		return Responses.Dequeue().Invoke();
 	}

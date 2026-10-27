@@ -14,6 +14,7 @@ namespace ASFNotifier;
 internal sealed class MatrixChannel : INotificationChannel {
 	internal static readonly TimeSpan DegradedRetryGap = TimeSpan.FromMinutes(10);
 	internal static readonly TimeSpan MaxRetryAfter = TimeSpan.FromSeconds(60);
+	internal const int MaxResponseBytes = 64 * 1024;
 	internal static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(10);
 
 	private readonly string AccessToken;
@@ -37,7 +38,7 @@ internal sealed class MatrixChannel : INotificationChannel {
 	}
 
 	// Built without any logging handler on purpose: it would see the bearer token
-	internal static HttpClient CreateHttpClient(HttpMessageHandler? handler = null) => handler == null ? new HttpClient { Timeout = RequestTimeout } : new HttpClient(handler, false) { Timeout = RequestTimeout };
+	internal static HttpClient CreateHttpClient(HttpMessageHandler? handler = null) => handler == null ? new HttpClient { MaxResponseContentBufferSize = MaxResponseBytes, Timeout = RequestTimeout } : new HttpClient(handler, false) { MaxResponseContentBufferSize = MaxResponseBytes, Timeout = RequestTimeout };
 
 	public async Task<SendResult> SendAsync(FormattedMessage message, string transactionId, bool bypassDegraded, CancellationToken cancellationToken) {
 		ArgumentNullException.ThrowIfNull(message);
@@ -158,7 +159,7 @@ internal sealed class MatrixChannel : INotificationChannel {
 
 	private TimeSpan? ReadRetryAfter(HttpResponseMessage response, JsonElement root) {
 		if ((root.ValueKind == JsonValueKind.Object) && root.TryGetProperty("retry_after_ms", out JsonElement ms) && (ms.ValueKind == JsonValueKind.Number) && ms.TryGetDouble(out double milliseconds)) {
-			return Cap(TimeSpan.FromMilliseconds(milliseconds));
+			return double.IsNaN(milliseconds) ? null : TimeSpan.FromMilliseconds(Math.Clamp(milliseconds, 0, MaxRetryAfter.TotalMilliseconds));
 		}
 
 		RetryConditionHeaderValue? header = response.Headers.RetryAfter;

@@ -1,5 +1,5 @@
 using System;
-using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Globalization;
 using System.Threading;
 using System.Threading.Tasks;
@@ -39,15 +39,24 @@ internal readonly record struct NotifyTestDecision(NotifyTestAction Action, int 
 internal sealed class NotifyTestCommand(NotifierSettings settings, INotificationChannel? channel, TimeProvider timeProvider, TimeSpan? sendTimeout) {
 	private static readonly TimeSpan DefaultSendTimeout = TimeSpan.FromSeconds(15);
 
-	private readonly ConcurrentDictionary<string, DateTimeOffset> LastTestByBot = new(StringComparer.Ordinal);
+	private readonly Dictionary<string, DateTimeOffset> LastTestByBot = new(StringComparer.Ordinal);
+	private readonly Lock Lock = new();
 
 	// Returns null when the command is not ours or the caller may not know it exists
 	internal async Task<string?> HandleAsync(string botName, string? commandName, bool isMasterOrHigher, CancellationToken cancellationToken) {
 		DateTimeOffset now = timeProvider.GetUtcNow();
-		DateTimeOffset? last = LastTestByBot.TryGetValue(botName, out DateTimeOffset previous) ? previous : null;
 		string? notConfigured = channel == null ? (settings.NotConfiguredReason ?? "no channel") : null;
+		NotifyTestDecision decision;
 
-		NotifyTestDecision decision = NotifyTestDecision.Decide(commandName, isMasterOrHigher, last, now, notConfigured);
+		// Read, decide and write the cooldown as one step, so parallel commands cannot both send
+		lock (Lock) {
+			DateTimeOffset? last = LastTestByBot.TryGetValue(botName, out DateTimeOffset previous) ? previous : null;
+			decision = NotifyTestDecision.Decide(commandName, isMasterOrHigher, last, now, notConfigured);
+
+			if (decision.Action == NotifyTestAction.Send) {
+				LastTestByBot[botName] = now;
+			}
+		}
 
 		switch (decision.Action) {
 			case NotifyTestAction.Cooldown:
@@ -55,8 +64,6 @@ internal sealed class NotifyTestCommand(NotifierSettings settings, INotification
 			case NotifyTestAction.NotConfigured:
 				return $"<{botName}> ASF-Notifier is not configured: {notConfigured}.";
 			case NotifyTestAction.Send when channel != null:
-				LastTestByBot[botName] = now;
-
 				return await Send(botName, channel, now, cancellationToken).ConfigureAwait(false);
 			default:
 				return null;
