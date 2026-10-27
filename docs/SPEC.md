@@ -209,7 +209,7 @@ The clock is injected (`TimeProvider`) so tests control time.
 
 ```csharp
 interface INotificationChannel {              // test seam only
-    Task<SendResult> SendAsync(FormattedMessage message, bool bypassDegraded, CancellationToken ct);
+    Task<SendResult> SendAsync(FormattedMessage message, string transactionId, bool bypassDegraded, CancellationToken ct);
 }
 sealed record FormattedMessage(string PlainText, string Html);
 enum SendOutcome { Sent, RetryAfter, Transient, Dropped }  // SendResult: outcome + delay + short error

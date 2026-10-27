@@ -1,7 +1,11 @@
 using System;
+using System.Collections.Generic;
+using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
 using ArchiSteamFarm.Core;
 using ArchiSteamFarm.Plugins.Interfaces;
+using ArchiSteamFarm.Steam;
 using JetBrains.Annotations;
 
 namespace ASFNotifier;
@@ -9,15 +13,59 @@ namespace ASFNotifier;
 // ASF exports every IPlugin type by convention, no [Export] attribute needed
 #pragma warning disable CA1812 // ASF uses this class during runtime
 [UsedImplicitly]
-internal sealed class ASFNotifier : IGitHubPluginUpdates {
+internal sealed class ASFNotifier : IASF, IBotCommand2, IGitHubPluginUpdates {
+	private NotifyTestCommand? NotifyTest;
+
 	public string Name => nameof(ASFNotifier);
 	public string RepositoryName => "easly1989/ASF-Notifier";
 	public Version Version => typeof(ASFNotifier).Assembly.GetName().Version ?? throw new InvalidOperationException(nameof(Version));
+
+	public Task OnASFInit(IReadOnlyDictionary<string, JsonElement>? additionalConfigProperties = null) {
+		try {
+			NotifierSettings settings = NotifierSettings.Parse(additionalConfigProperties, Environment.GetEnvironmentVariable(NotifierSettings.EnvironmentTokenVariable), new AsfLog());
+			MatrixChannel? channel = null;
+
+			if (settings is { IsConfigured: true, HomeserverUrl: { } homeserver, RoomId: { } roomId, AccessToken: { } token }) {
+				channel = new MatrixChannel(MatrixChannel.CreateHttpClient(), homeserver, roomId, token, TimeProvider.System, new AsfLog());
+			}
+
+			NotifyTest = new NotifyTestCommand(settings, channel, TimeProvider.System, null);
+		} catch (Exception e) {
+			ASF.ArchiLogger.LogGenericException(e);
+		}
+
+		return Task.CompletedTask;
+	}
+
+	public async Task<string?> OnBotCommand(Bot bot, EAccess access, string message, string[] args, ulong steamID = 0) {
+		ArgumentNullException.ThrowIfNull(bot);
+		ArgumentNullException.ThrowIfNull(args);
+
+		if (NotifyTest == null) {
+			return null;
+		}
+
+		try {
+			return await NotifyTest.HandleAsync(bot.BotName, args.Length > 0 ? args[0] : null, IsMasterOrHigher(access), CancellationToken.None).ConfigureAwait(false);
+		} catch (Exception e) {
+			ASF.ArchiLogger.LogGenericException(e);
+
+			return null;
+		}
+	}
 
 	public Task OnLoaded() {
 		ASF.ArchiLogger.LogGenericInfo($"{Name} {Version} loaded");
 
 		return Task.CompletedTask;
+	}
+
+	internal static bool IsMasterOrHigher(EAccess access) => access >= EAccess.Master;
+
+	private sealed class AsfLog : INotifierLog {
+		public void Error(string message) => ASF.ArchiLogger.LogGenericError(message, nameof(ASFNotifier));
+		public void Info(string message) => ASF.ArchiLogger.LogGenericInfo(message, nameof(ASFNotifier));
+		public void Warning(string message) => ASF.ArchiLogger.LogGenericWarning(message, nameof(ASFNotifier));
 	}
 }
 #pragma warning restore CA1812 // ASF uses this class during runtime
