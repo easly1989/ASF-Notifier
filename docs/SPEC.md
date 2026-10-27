@@ -505,8 +505,8 @@ returns at once.
 ## 12. Testing
 
 - **Framework:** MSTest, as in ASF's own `ArchiSteamFarm.Tests` (the plugin template ships
-  no tests). Project `ASFNotifier.Tests`. ASF's analyzers apply to it too; `.editorconfig`
-  relaxes only what test naming needs (for example CA1707) for the test project.
+  no tests). Project `ASFNotifier.Tests`. ASF's analyzers apply to it too, with no
+  suppressions beyond ASF's own (`internal` test classes, `[assembly: DiscoverInternals]`).
 - **What is unit-tested:** the core, which has no ASF types: settings parsing and merge
   (global, per bot, env var), filter, rate limiter and dedupe (with a fake `TimeProvider`),
   formatter (every row of section 8, HTML escaping), `ConnectionWatcher` state machine (fake

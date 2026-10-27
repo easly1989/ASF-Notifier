@@ -4,22 +4,24 @@ An [ArchiSteamFarm](https://github.com/JustArchiNET/ArchiSteamFarm) (ASF) plugin
 configurable notifications to a Matrix room. The design lives in `docs/SPEC.md`; the build
 order lives in `docs/PLAN.md` and the GitHub issues.
 
-## Layout (once ticket #1 lands)
+## Layout
 
 Mirrors JustArchiNET's `ASF-PluginTemplate`:
 
 - `ArchiSteamFarm/`: git submodule pinned to the ASF release tag we build against (6.3.10.6).
 - `ASFNotifier/`: the plugin project. Assembly and plugin name `ASFNotifier`.
 - `ASFNotifier.Tests/`: MSTest unit tests (the framework ASF's own tests use).
+- `ASFNotifier.slnx`: solution with ASF, the plugin and the tests.
 - `Directory.Build.props` / `Directory.Packages.props`: import ASF's, so the target framework
-  (`net10.0`) and package versions come from the submodule.
+  (`net10.0`) and package versions come from the submodule. The plugin `<Version>` lives here.
 
 ## Commands
 
-Requires the .NET 10 SDK. Clone with submodules: `git clone --recursive`.
+Requires the .NET 10 SDK. Clone with submodules: `git clone --recursive` (or
+`git submodule update --init` afterwards).
 
 - Build: `dotnet build -c Release`
-- Test: `dotnet test ASFNotifier.Tests`
+- Test: `dotnet test ASFNotifier.Tests -c Release`
 - Package: `dotnet publish ASFNotifier -c Release -o out/ASFNotifier`, then zip the folder's
   contents (not the folder) as `ASFNotifier.zip` (CI does this; see
   `.github/workflows/publish.yml`).
