@@ -9,11 +9,14 @@ namespace ASFNotifier;
 internal sealed class ConnectionWatcher {
 	private readonly Func<bool> IsShuttingDown;
 	private readonly Lock Lock = new();
-	private readonly Dictionary<string, BotState> States = new(StringComparer.Ordinal);
-	private readonly Func<string, (TapEntry? GiveUpError, TapEntry? Reason)> Tap;
+
+	// Bots in an outage; ticket #4 adds the disconnect time, reason and timer of each
+	private readonly HashSet<string> Outages = new(StringComparer.Ordinal);
+
+	private readonly IGiveUpLog Tap;
 	private readonly TimeProvider TimeProvider;
 
-	internal ConnectionWatcher(Func<string, (TapEntry? GiveUpError, TapEntry? Reason)> tap, Func<bool> isShuttingDown, TimeProvider timeProvider) {
+	internal ConnectionWatcher(IGiveUpLog tap, Func<bool> isShuttingDown, TimeProvider timeProvider) {
 		Tap = tap;
 		IsShuttingDown = isShuttingDown;
 		TimeProvider = timeProvider;
@@ -21,7 +24,7 @@ internal sealed class ConnectionWatcher {
 
 	internal bool IsTracked(string botName) {
 		lock (Lock) {
-			return States.ContainsKey(botName);
+			return Outages.Contains(botName);
 		}
 	}
 
@@ -29,38 +32,33 @@ internal sealed class ConnectionWatcher {
 		DateTimeOffset now = TimeProvider.GetUtcNow();
 
 		lock (Lock) {
-			// A stopped bot only disconnects again after it was started again, so a reported stop closes the outage
-			if (!States.TryGetValue(botName, out BotState? state) || state.StopNotified) {
-				state = new BotState();
-				States[botName] = state;
-			}
-
 			if (keepRunning) {
+				Outages.Add(botName);
+
 				return null;
 			}
 
-			(TapEntry? giveUpError, TapEntry? reasonEntry) = Tap(botName);
-			Notification? notification = StopClassifier.Classify(botName, now, IsShuttingDown(), state.StopNotified, requiredInput, reason, giveUpError, reasonEntry);
-			state.StopNotified = true;
+			(TapEntry? giveUpError, TapEntry? reasonEntry) = Tap.Get(botName);
+			Notification? notification = StopClassifier.Classify(botName, now, IsShuttingDown(), requiredInput, reason, giveUpError, reasonEntry);
+
+			// Report once: Stop() disconnects at most once per connection, so a classified stop ends the outage and
+			// uses up its evidence; the next stop disconnect can only come after the bot was started again
+			Outages.Remove(botName);
+			Tap.Forget(botName);
 
 			return notification;
 		}
 	}
 
-	internal void OnDestroy(string botName) {
-		lock (Lock) {
-			States.Remove(botName);
-		}
-	}
+	internal void OnDestroy(string botName) => Clear(botName);
 
-	internal void OnLoggedOn(string botName) {
-		lock (Lock) {
-			States.Remove(botName);
-		}
-	}
+	// The bot runs again: what ASF logged before must not explain a later stop
+	internal void OnLoggedOn(string botName) => Clear(botName);
 
-	private sealed class BotState {
-		// Ticket #4 adds the disconnect time, reason and timer of the outage here
-		internal bool StopNotified { get; set; }
+	private void Clear(string botName) {
+		lock (Lock) {
+			Outages.Remove(botName);
+			Tap.Forget(botName);
+		}
 	}
 }

@@ -9,9 +9,14 @@ using SteamKit2;
 
 namespace ASFNotifier;
 
+internal interface IGiveUpLog {
+	void Forget(string botName);
+	(TapEntry? GiveUpError, TapEntry? Reason) Get(string botName);
+}
+
 // Spec section 5.3: records, per bot logger, the latest ASF give-up error and the latest login or logged-off reason.
 // It keeps time, method and parsed EResult only; log text is never stored, forwarded or logged again.
-internal sealed class GiveUpLogTap : IDisposable {
+internal sealed class GiveUpLogTap : IDisposable, IGiveUpLog {
 	internal const string RuleName = "ASFNotifierTap";
 
 	private const string OnLoggedOff = nameof(OnLoggedOff);
@@ -19,19 +24,26 @@ internal sealed class GiveUpLogTap : IDisposable {
 	// ASF's Stop() call sites that log an Error first (spec fact 3)
 	private static readonly FrozenSet<string> GiveUpMethods = new[] { StopClassifier.HandleLoginResult, OnLoggedOff, "OnLoggedOn", "OnConnected", "RequestInput" }.ToFrozenSet(StringComparer.Ordinal);
 
+	private readonly Action<Action> Defer;
 	private readonly Dictionary<string, (TapEntry? GiveUpError, TapEntry? Reason)> Entries = new(StringComparer.Ordinal);
 	private readonly LogFactory Factory;
 	private readonly Lock Lock = new();
+
+	// Taken only outside NLog's own lock, and always before it: NLog raises ConfigurationChanged while holding it
+	private readonly Lock RegistrationLock = new();
+
 	private readonly TimeProvider TimeProvider;
 
 	private TapTarget? CurrentTarget;
 	private bool Disposed;
 
-	internal GiveUpLogTap(LogFactory factory, TimeProvider timeProvider) {
+	// defer is a test seam; production hands the re-registration to the thread pool
+	internal GiveUpLogTap(LogFactory factory, TimeProvider timeProvider, Action<Action>? defer = null) {
 		ArgumentNullException.ThrowIfNull(factory);
 
 		Factory = factory;
 		TimeProvider = timeProvider;
+		Defer = defer ?? (static work => ThreadPool.QueueUserWorkItem(static state => state(), work, false));
 
 		// ASF or the user can replace the NLog configuration at runtime; the tap follows it
 		Factory.ConfigurationChanged += OnConfigurationChanged;
@@ -39,33 +51,36 @@ internal sealed class GiveUpLogTap : IDisposable {
 	}
 
 	public void Dispose() {
-		lock (Lock) {
-			if (Disposed) {
-				return;
-			}
-
-			Disposed = true;
-			Entries.Clear();
-		}
-
 		Factory.ConfigurationChanged -= OnConfigurationChanged;
 
-		LoggingConfiguration? configuration = Factory.Configuration;
+		lock (RegistrationLock) {
+			lock (Lock) {
+				if (Disposed) {
+					return;
+				}
 
-		if ((configuration != null) && (RemoveRules(configuration) > 0)) {
-			Factory.ReconfigExistingLoggers();
+				Disposed = true;
+				Entries.Clear();
+			}
+
+			LoggingConfiguration? configuration = Factory.Configuration;
+
+			if ((configuration != null) && (RemoveRules(configuration) > 0)) {
+				Factory.ReconfigExistingLoggers();
+			}
+
+			CurrentTarget?.Dispose();
+			CurrentTarget = null;
 		}
-
-		CurrentTarget?.Dispose();
 	}
 
-	internal void Forget(string botName) {
+	public void Forget(string botName) {
 		lock (Lock) {
 			Entries.Remove(botName);
 		}
 	}
 
-	internal (TapEntry? GiveUpError, TapEntry? Reason) Get(string botName) {
+	public (TapEntry? GiveUpError, TapEntry? Reason) Get(string botName) {
 		lock (Lock) {
 			return Entries.GetValueOrDefault(botName);
 		}
@@ -105,24 +120,41 @@ internal sealed class GiveUpLogTap : IDisposable {
 		}
 	}
 
-	private void OnConfigurationChanged(object? sender, LoggingConfigurationChangedEventArgs e) => Register(e.ActivatedConfiguration);
+	// NLog raises this inside its configuration lock (LogFactory.Configuration's setter in 6.2.1): touching NLog
+	// from here could deadlock against another thread, so only hand the work off
+	private void OnConfigurationChanged(object? sender, LoggingConfigurationChangedEventArgs e) {
+		LoggingConfiguration? activated = e.ActivatedConfiguration;
+
+		if (activated != null) {
+			Defer(() => Register(activated));
+		}
+	}
 
 	private void Register(LoggingConfiguration? configuration) {
 		if (configuration == null) {
 			return;
 		}
 
-		lock (Lock) {
-			if (Disposed) {
+		lock (RegistrationLock) {
+			lock (Lock) {
+				if (Disposed) {
+					return;
+				}
+			}
+
+			// Deferred work can arrive after yet another reload; that reload registers on its own
+			if (!ReferenceEquals(Factory.Configuration, configuration)) {
 				return;
 			}
-		}
 
-		// A fresh target each time: the configuration being replaced closes the targets it held
-		CurrentTarget = new TapTarget(this);
-		RemoveRules(configuration);
-		configuration.LoggingRules.Insert(0, new LoggingRule("*", LogLevel.Info, LogLevel.Fatal, CurrentTarget) { RuleName = RuleName });
-		Factory.ReconfigExistingLoggers();
+			// A fresh target each time: the configuration being replaced closes the targets it held
+			TapTarget? previous = CurrentTarget;
+			CurrentTarget = new TapTarget(this);
+			RemoveRules(configuration);
+			configuration.LoggingRules.Insert(0, new LoggingRule("*", LogLevel.Info, LogLevel.Fatal, CurrentTarget) { RuleName = RuleName });
+			Factory.ReconfigExistingLoggers();
+			previous?.Dispose();
+		}
 	}
 
 	private static int RemoveRules(LoggingConfiguration configuration) {

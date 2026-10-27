@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using NLog;
@@ -87,14 +88,18 @@ internal sealed class GiveUpLogTapTests {
 		using LogFactory factory = Factory();
 		FakeTimeProvider time = new();
 		Logger bot1 = factory.GetLogger("bot1");
+		List<Action> deferred = [];
 
-		using GiveUpLogTap tap = new(factory, time);
+		using GiveUpLogTap tap = new(factory, time, deferred.Add);
 
 		bot1.Error("OnConnected() SteamLogin is invalid!");
 		Assert.IsNotNull(tap.Get("bot1").GiveUpError);
 
-		// ASF or the user replaces the configuration; a logger created before keeps working, so does a new one
+		// ASF or the user replaces the configuration; a logger created before keeps working, so does a new one.
+		// NLog raises the event under its configuration lock, so the handler only defers the work.
 		factory.Configuration = new LoggingConfiguration();
+		Assert.AreEqual(0, factory.Configuration.LoggingRules.Count);
+		RunAll(deferred);
 		time.Advance(TimeSpan.FromMinutes(1));
 		bot1.Error("HandleLoginResult() Unable to login to Steam: AccountDisabled/Invalid");
 		factory.GetLogger("bot2").Error("OnLoggedOn() steamParentalCode is invalid!");
@@ -103,12 +108,17 @@ internal sealed class GiveUpLogTapTests {
 		Assert.AreEqual(new TapEntry(time.Now, "OnLoggedOn", null), tap.Get("bot2").GiveUpError);
 		Assert.AreEqual(1, factory.Configuration.LoggingRules.Count(static rule => rule.RuleName == GiveUpLogTap.RuleName));
 
-		// And a second reload
+		// Two more reloads before the deferred work runs: only the active configuration gets the rule
+		LoggingConfiguration replaced = new();
+		factory.Configuration = replaced;
 		factory.Configuration = new LoggingConfiguration();
+		RunAll(deferred);
 		time.Advance(TimeSpan.FromMinutes(1));
 		bot1.Error("RequestInput() input is invalid!");
 
 		Assert.AreEqual(new TapEntry(time.Now, "RequestInput", null), tap.Get("bot1").GiveUpError);
+		Assert.AreEqual(0, replaced.LoggingRules.Count);
+		Assert.AreEqual(1, factory.Configuration.LoggingRules.Count);
 	}
 
 	[TestMethod]
@@ -130,15 +140,20 @@ internal sealed class GiveUpLogTapTests {
 	internal void ForgetAndDisposeLeaveNothingBehind() {
 		using LogFactory factory = Factory();
 		Logger bot1 = factory.GetLogger("bot1");
-		GiveUpLogTap tap = new(factory, new FakeTimeProvider());
+		List<Action> deferred = [];
+		GiveUpLogTap tap = new(factory, new FakeTimeProvider(), deferred.Add);
 
 		bot1.Error("OnConnected() SteamLogin is invalid!");
 		tap.Forget("bot1");
 		Assert.AreEqual((null, null), tap.Get("bot1"));
 
+		// A reload whose deferred registration only runs after Dispose
+		factory.Configuration = new LoggingConfiguration();
 		tap.Dispose();
+		RunAll(deferred);
 		bot1.Error("OnConnected() SteamLogin is invalid!");
 		factory.Configuration = new LoggingConfiguration();
+		RunAll(deferred);
 		bot1.Error("OnConnected() SteamLogin is invalid!");
 
 		Assert.AreEqual((null, null), tap.Get("bot1"));
@@ -146,5 +161,13 @@ internal sealed class GiveUpLogTapTests {
 	}
 
 	private static LogFactory Factory() => new() { Configuration = new LoggingConfiguration() };
+
+	private static void RunAll(List<Action> deferred) {
+		foreach (Action action in deferred) {
+			action();
+		}
+
+		deferred.Clear();
+	}
 }
 #pragma warning restore CA1812 // MSTest uses this class during runtime

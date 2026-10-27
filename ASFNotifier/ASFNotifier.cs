@@ -17,6 +17,9 @@ namespace ASFNotifier;
 #pragma warning disable CA1812 // ASF uses this class during runtime
 [UsedImplicitly]
 internal sealed class ASFNotifier : IASF, IBot, IBotCommand2, IBotConnection, IDisposable, IGitHubPluginUpdates {
+	private readonly StopHold Hold = new();
+
+	private ITimer? HoldTimer;
 	private NotifyTestCommand? NotifyTest;
 	private SendQueue? Queue;
 	private NotifierSettings? Settings;
@@ -42,6 +45,8 @@ internal sealed class ASFNotifier : IASF, IBot, IBotCommand2, IBotConnection, ID
 			Tap?.Dispose();
 			Tap = null;
 			Watcher = null;
+			HoldTimer?.Dispose();
+			HoldTimer = null;
 
 			NotifierSettings settings = NotifierSettings.Parse(additionalConfigProperties, Environment.GetEnvironmentVariable(NotifierSettings.EnvironmentTokenVariable), new AsfLog());
 			MatrixChannel? channel = null;
@@ -50,7 +55,8 @@ internal sealed class ASFNotifier : IASF, IBot, IBotCommand2, IBotConnection, ID
 				channel = new MatrixChannel(MatrixChannel.CreateHttpClient(), homeserver, roomId, token, TimeProvider.System, new AsfLog());
 				Queue = new SendQueue(channel, new AsfLog(), TimeProvider.System);
 				Tap = new GiveUpLogTap(LogManager.LogFactory, TimeProvider.System);
-				Watcher = new ConnectionWatcher(Tap.Get, () => IsShuttingDown, TimeProvider.System);
+				Watcher = new ConnectionWatcher(Tap, () => IsShuttingDown, TimeProvider.System);
+				HoldTimer = TimeProvider.System.CreateTimer(_ => ReleaseHeldStops(), null, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
 				RegisterShutdownSignals();
 
 				// ASF has no shutdown hook; it exits through Environment.Exit, which raises ProcessExit
@@ -72,6 +78,7 @@ internal sealed class ASFNotifier : IASF, IBot, IBotCommand2, IBotConnection, ID
 
 		SigInt?.Dispose();
 		SigTerm?.Dispose();
+		HoldTimer?.Dispose();
 		Queue?.Dispose();
 		Tap?.Dispose();
 	}
@@ -98,7 +105,6 @@ internal sealed class ASFNotifier : IASF, IBot, IBotCommand2, IBotConnection, ID
 
 		try {
 			Watcher?.OnDestroy(bot.BotName);
-			Tap?.Forget(bot.BotName);
 		} catch (Exception e) {
 			ASF.ArchiLogger.LogGenericException(e);
 		}
@@ -154,8 +160,41 @@ internal sealed class ASFNotifier : IASF, IBot, IBotCommand2, IBotConnection, ID
 	internal static bool IsMasterOrHigher(EAccess access) => access >= EAccess.Master;
 
 	private void Emit(Notification? notification) {
-		if ((notification != null) && (Settings != null) && Filter.Allows(notification, Settings)) {
-			Queue?.Enqueue(notification);
+		if ((notification == null) || (Settings == null) || !Filter.Allows(notification, Settings)) {
+			return;
+		}
+
+		if (notification.Kind is NotificationKind.BotStopped or NotificationKind.BotStoppedByAsf) {
+			Hold.Add(notification);
+			HoldTimer?.Change(StopHold.HoldTime, Timeout.InfiniteTimeSpan);
+
+			return;
+		}
+
+		Queue?.Enqueue(notification);
+	}
+
+	// Timer callback: sends the held stops that are due unless ASF is going down, then re-arms for the rest
+	private void ReleaseHeldStops() {
+		try {
+			DateTimeOffset now = TimeProvider.System.GetUtcNow();
+			int runningBots = 0;
+
+			foreach (Bot bot in Bot.BotsReadOnly?.Values ?? []) {
+				if (bot.KeepRunning) {
+					runningBots++;
+				}
+			}
+
+			foreach (Notification notification in Hold.Release(now, IsShuttingDown, runningBots)) {
+				Queue?.Enqueue(notification);
+			}
+
+			if (Hold.NextDue is { } due) {
+				HoldTimer?.Change(due > now ? due - now : TimeSpan.Zero, Timeout.InfiniteTimeSpan);
+			}
+		} catch (Exception e) {
+			ASF.ArchiLogger.LogGenericException(e);
 		}
 	}
 

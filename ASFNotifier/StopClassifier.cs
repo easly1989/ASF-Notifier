@@ -11,9 +11,10 @@ internal static class StopClassifier {
 	internal const string HandleLoginResult = nameof(HandleLoginResult);
 	internal static readonly TimeSpan Window = TimeSpan.FromSeconds(60);
 
-	// t is the time of the disconnect that revealed the stop, never the time of classifying it
-	internal static Notification? Classify(string botName, DateTimeOffset t, bool shuttingDown, bool alreadyReported, string? requiredInput, EResult hookReason, TapEntry? giveUpError, TapEntry? reasonEntry) {
-		if (shuttingDown || alreadyReported) {
+	// t is the time of the disconnect that revealed the stop, never the time of classifying it.
+	// Step 2 (report once) is the watcher's: a classified stop ends the bot's outage.
+	internal static Notification? Classify(string botName, DateTimeOffset t, bool shuttingDown, string? requiredInput, EResult hookReason, TapEntry? giveUpError, TapEntry? reasonEntry) {
+		if (shuttingDown) {
 			return null;
 		}
 
