@@ -176,10 +176,11 @@ internal sealed class SendQueue : IDisposable {
 		}
 	}
 
-	private void EndOutage() {
+	// A drop ends the outage too: the homeserver answered, it just refused that message
+	private void EndOutage(bool sent) {
 		if (Outage) {
 			Outage = false;
-			Log.Info("Matrix delivery recovered, sending queued notifications");
+			Log.Info(sent ? "Matrix delivery recovered, sending queued notifications" : "Matrix is reachable again");
 		}
 	}
 
@@ -192,14 +193,14 @@ internal sealed class SendQueue : IDisposable {
 			SendResult result = await Target.SendAsync(message, transactionId, false, Abandon.Token).ConfigureAwait(false);
 
 			if (result.Outcome == SendOutcome.Sent) {
-				EndOutage();
+				EndOutage(true);
 				Interlocked.Decrement(ref Pending);
 
 				return;
 			}
 
 			if (result.Outcome == SendOutcome.Dropped) {
-				EndOutage();
+				EndOutage(false);
 				Interlocked.Decrement(ref Pending);
 
 				return;
@@ -254,6 +255,13 @@ internal sealed class SendQueue : IDisposable {
 				return;
 			} catch (Exception e) {
 				LogUnexpected(e);
+
+				// A reader that keeps failing must not spin
+				try {
+					await Task.Delay(InitialBackoff, Abandon.Token).ConfigureAwait(false);
+				} catch (OperationCanceledException) {
+					return;
+				}
 			}
 		}
 	}

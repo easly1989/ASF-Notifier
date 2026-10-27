@@ -31,6 +31,29 @@ internal sealed class FilterAndFormatterTests {
 	}
 
 	[TestMethod]
+	[DataRow(NotificationKind.BotStoppedByAsf, "TwoFactorCodeMismatch", null, true, "🔴 bot1 — login failed (TwoFactorCodeMismatch), ASF stopped the bot", "🔴 <b>bot1</b> — login failed (<code>TwoFactorCodeMismatch</code>), ASF stopped the bot", DisplayName = "Stopped by ASF, login reason")]
+	[DataRow(NotificationKind.BotStoppedByAsf, null, "TwoFactorAuthentication", false, "🔴 bot1 — ASF stopped the bot, it needs TwoFactorAuthentication input", "🔴 <b>bot1</b> — ASF stopped the bot, it needs <code>TwoFactorAuthentication</code> input", DisplayName = "Stopped by ASF, needs input")]
+	[DataRow(NotificationKind.BotStoppedByAsf, "LogonSessionReplaced", null, false, "🔴 bot1 — ASF stopped the bot (LogonSessionReplaced)", "🔴 <b>bot1</b> — ASF stopped the bot (<code>LogonSessionReplaced</code>)", DisplayName = "Stopped by ASF, other reason")]
+	[DataRow(NotificationKind.BotStoppedByAsf, null, null, false, "🔴 bot1 — ASF stopped the bot", "🔴 <b>bot1</b> — ASF stopped the bot", DisplayName = "Stopped by ASF, no reason")]
+	[DataRow(NotificationKind.BotStopped, null, null, false, "⏹️ bot1 — bot stopped", "⏹️ <b>bot1</b> — bot stopped", DisplayName = "Stopped")]
+	internal void FormatterStopRows(NotificationKind kind, string? reason, string? requiredInput, bool loginFailed, string plain, string html) {
+		FormattedMessage message = Formatter.Format(new Notification(kind, "bot1", DateTimeOffset.UnixEpoch, reason, requiredInput, LoginFailed: loginFailed));
+
+		Assert.AreEqual(plain, message.PlainText);
+		Assert.AreEqual(html, message.Html);
+	}
+
+	[TestMethod]
+	internal void FormatterEscapesStopValuesInHtmlOnly() {
+		FormattedMessage withReason = Formatter.Format(new Notification(NotificationKind.BotStoppedByAsf, "a<b>", DateTimeOffset.UnixEpoch, "x&y", LoginFailed: true));
+		FormattedMessage withInput = Formatter.Format(new Notification(NotificationKind.BotStoppedByAsf, "a<b>", DateTimeOffset.UnixEpoch, RequiredInput: "<i>"));
+
+		Assert.AreEqual("🔴 a<b> — login failed (x&y), ASF stopped the bot", withReason.PlainText);
+		Assert.AreEqual("🔴 <b>a&lt;b&gt;</b> — login failed (<code>x&amp;y</code>), ASF stopped the bot", withReason.Html);
+		Assert.AreEqual("🔴 <b>a&lt;b&gt;</b> — ASF stopped the bot, it needs <code>&lt;i&gt;</code> input", withInput.Html);
+	}
+
+	[TestMethod]
 	internal void FormatterTestRow() {
 		FormattedMessage message = Formatter.Format(Of(NotificationKind.Test));
 

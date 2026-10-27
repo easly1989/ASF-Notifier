@@ -313,8 +313,9 @@ internal sealed class SendQueueTests {
 
 			return SendResult.Sent();
 		});
+		FakeTimeProvider time = new();
 
-		using SendQueue overflow = new(blocked, log, new FakeTimeProvider(), new RecordingDelay().Wait);
+		using SendQueue overflow = new(blocked, log, time, new RecordingDelay().Wait);
 
 		overflow.Enqueue(Note("n0"));
 		blocked.WaitForCalls(1);
@@ -323,9 +324,15 @@ internal sealed class SendQueueTests {
 			Assert.IsTrue(overflow.Enqueue(Note($"n{i}")));
 		}
 
+		// The drop report is due again, so the worker's own report after its next send throws
+		time.Advance(SendQueue.DropLogInterval + TimeSpan.FromSeconds(1));
 		gate.SetResult();
+		blocked.WaitForCalls(101);
+		Assert.IsTrue(overflow.Enqueue(Note("after")));
+		blocked.WaitForCalls(102);
+		Assert.IsFalse(overflow.IsStopped);
 		overflow.Flush();
-		Assert.AreEqual(101, blocked.Calls.Count);
+		Assert.AreEqual("after", blocked.Calls[^1].Text);
 
 		// And the worker survives a logger that throws while it reports
 		queue.Enqueue(new Notification((NotificationKind) 200, "bot1", DateTimeOffset.UnixEpoch));
@@ -367,17 +374,22 @@ internal sealed class SendQueueTests {
 
 		Assert.AreEqual(1, log.Warnings.Count);
 		Assert.AreEqual(1, log.Infos.Count);
+		Assert.AreEqual("Matrix is reachable again", log.Infos[0]);
 	}
 
 	[TestMethod]
 	internal void SecondFlushWaitsOnlyForTheRemainingBudget() {
-		ScriptedChannel channel = new(static async token => {
-			await Task.Delay(Timeout.Infinite, token).ConfigureAwait(false);
+		TimeSpan budget = TimeSpan.FromMilliseconds(1500);
+
+		// The send ignores cancellation, so the worker outlives the budget and only the budget ends each wait
+		TaskCompletionSource gate = new();
+		ScriptedChannel channel = new(async _ => {
+			await gate.Task.ConfigureAwait(false);
 
 			return SendResult.Sent();
 		});
 
-		using SendQueue queue = new(channel, new FakeLog(), new FakeTimeProvider(), new RecordingDelay().Wait, TimeSpan.FromMilliseconds(200));
+		using SendQueue queue = new(channel, new FakeLog(), new FakeTimeProvider(), new RecordingDelay().Wait, budget);
 
 		queue.Enqueue(Note("a"));
 		channel.WaitForCalls(1);
@@ -385,11 +397,17 @@ internal sealed class SendQueueTests {
 		Stopwatch watch = Stopwatch.StartNew();
 		Task first = Task.Run(queue.Flush);
 		Assert.IsTrue(SpinWait.SpinUntil(() => queue.IsShuttingDown, Wait));
-		queue.Flush();
-		first.Wait(Wait);
 
-		// Both calls together stay within one budget, not two
-		Assert.IsLessThan(TimeSpan.FromMilliseconds(1500), watch.Elapsed);
+		// Start the second call halfway through: a fresh budget would end at 1.5 budgets, the shared one ends at 1
+		Assert.IsTrue(SpinWait.SpinUntil(() => watch.Elapsed >= budget / 2, Wait));
+		queue.Flush();
+		Assert.IsTrue(first.Wait(Wait));
+
+		TimeSpan elapsed = watch.Elapsed;
+		gate.SetResult();
+
+		Assert.IsGreaterThanOrEqualTo(budget * 0.9, elapsed);
+		Assert.IsLessThan(budget * 1.33, elapsed);
 	}
 
 	private static Notification Note(string bot) => new(NotificationKind.Test, bot, DateTimeOffset.UnixEpoch);
