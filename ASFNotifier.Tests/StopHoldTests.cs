@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
@@ -36,6 +37,29 @@ internal sealed class StopHoldTests {
 	}
 
 	[TestMethod]
+	internal void BotsAsfGaveUpOnTogetherAreSentEvenWithNothingLeftRunning() {
+		// A shutdown's Stop(true) logs no give-up error, so these are real failures, not a shutdown
+		StopHold hold = Held(GaveUp("bot1", T), GaveUp("bot2", T.AddSeconds(1)), Stop("bot3", T.AddSeconds(1)));
+
+		List<Notification> sent = hold.Release(T.AddSeconds(1) + StopHold.HoldTime, false, 0);
+
+		CollectionAssert.AreEquivalent(new List<string?> { "bot1", "bot2" }, sent.Select(static n => n.BotName).ToList());
+		Assert.IsNull(hold.NextDue);
+	}
+
+	[TestMethod]
+	internal void BotsAsfGaveUpOnAreDroppedWhenTheProcessGoesDown() =>
+		Assert.AreEqual(0, Held(GaveUp("bot1", T), GaveUp("bot2", T)).Release(T + StopHold.HoldTime, true, 0).Count);
+
+	[TestMethod]
+	internal void NeededInputWithoutAGiveUpErrorIsDroppedInAMassStop() {
+		// A bot waiting for input when ASF exits: RequiredInput is set, but ASF logged no give-up
+		StopHold hold = Held(new Notification(NotificationKind.BotStoppedByAsf, "bot1", T, RequiredInput: "SteamGuard"), new Notification(NotificationKind.BotStoppedByAsf, "bot2", T, RequiredInput: "TwoFactorAuthentication"));
+
+		Assert.AreEqual(0, hold.Release(T + StopHold.HoldTime, false, 0).Count);
+	}
+
+	[TestMethod]
 	internal void TwoBotsStoppingWhileAnotherRunsAreSent() {
 		StopHold hold = Held(Stop("bot1", T), Stop("bot2", T.AddSeconds(1)));
 
@@ -61,6 +85,8 @@ internal sealed class StopHoldTests {
 
 		return hold;
 	}
+
+	private static Notification GaveUp(string bot, DateTimeOffset at) => new(NotificationKind.BotStoppedByAsf, bot, at, "InvalidPassword", LoginFailed: true, AsfGaveUp: true);
 
 	private static Notification Stop(string bot, DateTimeOffset at) => new(NotificationKind.BotStopped, bot, at);
 }

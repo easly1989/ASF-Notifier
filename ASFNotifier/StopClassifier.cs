@@ -18,27 +18,29 @@ internal static class StopClassifier {
 			return null;
 		}
 
+		bool gaveUp = (giveUpError != null) && IsNear(giveUpError, t);
+
 		if (requiredInput != null) {
-			return new Notification(NotificationKind.BotStoppedByAsf, botName, t, RequiredInput: requiredInput);
+			return new Notification(NotificationKind.BotStoppedByAsf, botName, t, RequiredInput: requiredInput, AsfGaveUp: gaveUp);
 		}
 
-		if ((giveUpError == null) || !IsNear(giveUpError, t)) {
+		if (!gaveUp) {
 			return new Notification(NotificationKind.BotStopped, botName, t);
 		}
 
 		if (IsReason(hookReason)) {
-			return new Notification(NotificationKind.BotStoppedByAsf, botName, t, hookReason.ToString(), LoginFailed: true);
+			return new Notification(NotificationKind.BotStoppedByAsf, botName, t, hookReason.ToString(), LoginFailed: true, AsfGaveUp: true);
 		}
 
-		if (giveUpError.Reason is { } fromError) {
-			return new Notification(NotificationKind.BotStoppedByAsf, botName, t, fromError.ToString(), LoginFailed: giveUpError.Method == HandleLoginResult);
+		if (giveUpError!.Reason is { } fromError) {
+			return new Notification(NotificationKind.BotStoppedByAsf, botName, t, fromError.ToString(), LoginFailed: giveUpError.Method == HandleLoginResult, AsfGaveUp: true);
 		}
 
 		if (reasonEntry is { Reason: { } fromEntry } && IsNear(reasonEntry, t)) {
-			return new Notification(NotificationKind.BotStoppedByAsf, botName, t, fromEntry.ToString(), LoginFailed: reasonEntry.Method == HandleLoginResult);
+			return new Notification(NotificationKind.BotStoppedByAsf, botName, t, fromEntry.ToString(), LoginFailed: reasonEntry.Method == HandleLoginResult, AsfGaveUp: true);
 		}
 
-		return new Notification(NotificationKind.BotStoppedByAsf, botName, t);
+		return new Notification(NotificationKind.BotStoppedByAsf, botName, t, AsfGaveUp: true);
 	}
 
 	internal static bool IsReason(EResult result) => result is not (EResult.OK or EResult.Invalid) && Enum.IsDefined(result);

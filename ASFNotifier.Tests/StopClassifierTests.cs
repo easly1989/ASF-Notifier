@@ -50,6 +50,9 @@ internal sealed class StopClassifierTests {
 		Assert.AreEqual(requiredInput, result.RequiredInput);
 		Assert.AreEqual(expectedReason, result.Reason);
 		Assert.AreEqual(expectedLoginFailed, result.LoginFailed);
+
+		// Evidence that ASF gave up: a give-up error inside the window, whatever step decided
+		Assert.AreEqual(errorOffset is { } offset && (Math.Abs(offset) <= 60), result.AsfGaveUp);
 	}
 
 	[TestMethod]

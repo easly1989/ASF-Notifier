@@ -289,14 +289,18 @@ filter waits 10 seconds (`StopHold`) and is then:
 - dropped if the shutdown flag was set meanwhile (the process is going down);
 - dropped, with everything else held, if no bot is left running
   (`Bot.BotsReadOnly`, `KeepRunning`) and the held stops span more than one bot: every bot
-  stopped together, which is what a shutdown looks like;
+  stopped together, which is what a shutdown looks like. Exempt from this rule (not from the
+  shutdown flag) is a `BotStoppedByAsf` backed by a give-up `Error` within 60 seconds of `T`
+  (`Notification.AsfGaveUp`): a shutdown's `Stop(true)` logs none, so two bots ASF gave up on
+  at once (a Steam-side change) are both reported. A `BotStoppedByAsf` from `RequiredInput`
+  alone, with no such error (a bot waiting for input when ASF exits), is still dropped;
 - sent otherwise. One bot stopping is never a mass stop, so the only bot of a single-bot
   instance is still reported (its shutdown is caught by the flag instead).
 
 The hold is preferred over reading `Program.ShutdownSequenceInitialized` by reflection: that
 member is internal, may change in any ASF release, and would fail silently. The cost is a 10
 second delay on stop messages, and that stopping every bot within 10 seconds (for example
-`stop ASF`) sends nothing.
+`stop ASF`) sends no `BotStopped`.
 
 **NLog tap.** An in-process NLog target that records, per bot logger name, the latest
 `Error`-level entry written from one of ASF's give-up sites: `HandleLoginResult()`,
@@ -590,8 +594,10 @@ Based on the template's workflows, trimmed:
   `SteamClient.IsConnected` (fact 4), so `stop` during a reconnect wait or a rate-limit
   cooldown fires no hook. Until ticket #4 nothing is sent; with #4 the pending disconnect timer
   finds `KeepRunning == false` and reports the stop up to N minutes late.
-- **Stops coinciding with a shutdown or with every other bot stopping are not reported**
-  (the stop hold above), including a genuine 🔴 in the last 10 seconds before ASF exits.
+- **Stops coinciding with a shutdown are not reported** (the stop hold above), including a
+  genuine 🔴 in the last 10 seconds before ASF exits. When every bot stops together without a
+  shutdown, `BotStopped` and input-only 🔴 are dropped; a 🔴 backed by a give-up error is
+  still sent.
 - **Bot config edit.** `OnConfigChanged` calls `Stop(true)` and then `InitStart()`, which starts
   the bot again in the background. The disconnect callback may therefore reach the hook with
   `KeepRunning` already `true` again, which is a plain disconnect (5.2), not a stop: no
