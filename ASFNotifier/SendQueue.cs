@@ -12,6 +12,7 @@ internal sealed class SendQueue : IDisposable {
 	internal static readonly TimeSpan DropLogInterval = TimeSpan.FromMinutes(1);
 	internal static readonly TimeSpan InitialBackoff = TimeSpan.FromSeconds(2);
 	internal static readonly TimeSpan MaxBackoff = TimeSpan.FromMinutes(5);
+	internal static readonly TimeSpan MinRetryAfter = TimeSpan.FromSeconds(1);
 	internal static readonly TimeSpan MaxRetryAfter = TimeSpan.FromSeconds(60);
 
 	private readonly CancellationTokenSource Abandon = new();
@@ -25,6 +26,7 @@ internal sealed class SendQueue : IDisposable {
 	private readonly TimeProvider TimeProvider;
 	private readonly Task Worker;
 
+	private long FlushDeadline; // Environment.TickCount64 value, set when shutdown starts
 	private int DroppedSinceLog;
 	private DateTimeOffset? LastDropLog;
 	private bool Outage;
@@ -32,6 +34,7 @@ internal sealed class SendQueue : IDisposable {
 	private int Shutdown;
 
 	internal bool IsShuttingDown => Volatile.Read(ref Shutdown) != 0;
+	internal bool IsStopped => Worker.IsCompleted;
 
 	// delay and flushTimeout are test seams; production passes neither
 	internal SendQueue(INotificationChannel target, INotifierLog log, TimeProvider timeProvider, Func<TimeSpan, CancellationToken, Task>? delay = null, TimeSpan? flushTimeout = null) {
@@ -74,7 +77,28 @@ internal sealed class SendQueue : IDisposable {
 	// ProcessExit handler: sends what is queued without backoff, waits at most FlushTimeout in total, never throws
 	internal void Flush() {
 		try {
-			if (Interlocked.Exchange(ref Shutdown, 1) != 0) {
+			bool first;
+			long deadline;
+
+			lock (Lock) {
+				first = Shutdown == 0;
+
+				if (first) {
+					FlushDeadline = Environment.TickCount64 + (long) FlushTimeout.TotalMilliseconds;
+					Volatile.Write(ref Shutdown, 1);
+				}
+
+				deadline = FlushDeadline;
+			}
+
+			if (!first) {
+				// A concurrent or later call only waits out what is left of the first call's budget
+				long left = deadline - Environment.TickCount64;
+
+				if (left > 0) {
+					Worker.Wait(TimeSpan.FromMilliseconds(left));
+				}
+
 				return;
 			}
 
@@ -88,18 +112,26 @@ internal sealed class SendQueue : IDisposable {
 			}
 
 			int unsent = Volatile.Read(ref Pending);
+			int dropped;
 
-			if (unsent > 0) {
-				Log.Warning($"ASF is shutting down: {unsent} queued notification(s) were not sent");
+			lock (Lock) {
+				dropped = DroppedSinceLog;
+			}
+
+			if ((unsent > 0) || (dropped > 0)) {
+				Log.Warning($"ASF is shutting down: {unsent} queued notification(s) were not sent" + (dropped > 0 ? $", and {dropped} more were dropped earlier because the queue was full" : ""));
 			}
 		} catch (Exception e) {
 			LogUnexpected(e);
 		}
 	}
 
+	// Type and first stack frame only: an exception message could carry request details, so it is never logged
 	private void LogUnexpected(Exception e) {
 		try {
-			Log.Error($"Unexpected {e.GetType().Name} in the send queue");
+			string? frame = e.StackTrace?.Split((char) 10)[0].Trim();
+
+			Log.Error($"Unexpected {e.GetType().Name} in the send queue{(string.IsNullOrEmpty(frame) ? "" : $" {frame}")}");
 		} catch (Exception) {
 			// Nothing left to do: the process is exiting or the logger itself failed
 		}
@@ -110,25 +142,45 @@ internal sealed class SendQueue : IDisposable {
 
 		lock (Lock) {
 			DroppedSinceLog++;
-			ReportDrops();
+		}
+
+		ReportDrops();
+	}
+
+	// Builds the line under the lock and logs outside it; a failing logger must never reach Enqueue or kill the worker
+	private void ReportDrops() {
+		string? line = null;
+
+		lock (Lock) {
+			if (DroppedSinceLog == 0) {
+				return;
+			}
+
+			DateTimeOffset now = TimeProvider.GetUtcNow();
+
+			if ((LastDropLog == null) || ((now - LastDropLog.Value) >= DropLogInterval)) {
+				line = $"The send queue is full: {DroppedSinceLog} oldest notification(s) dropped";
+				DroppedSinceLog = 0;
+				LastDropLog = now;
+			}
+		}
+
+		if (line == null) {
+			return;
+		}
+
+		try {
+			Log.Warning(line);
+		} catch (Exception) {
+			// The count is already reset; the logger failing is not ours to fix
 		}
 	}
 
-	// Caller holds Lock
-	private void ReportDrops() {
-		if (DroppedSinceLog == 0) {
-			return;
+	private void EndOutage() {
+		if (Outage) {
+			Outage = false;
+			Log.Info("Matrix delivery recovered, sending queued notifications");
 		}
-
-		DateTimeOffset now = TimeProvider.GetUtcNow();
-
-		if ((LastDropLog != null) && ((now - LastDropLog.Value) < DropLogInterval)) {
-			return;
-		}
-
-		Log.Warning($"The send queue is full: {DroppedSinceLog} oldest notification(s) dropped");
-		DroppedSinceLog = 0;
-		LastDropLog = now;
 	}
 
 	private async Task ProcessAsync(Notification notification) {
@@ -140,17 +192,14 @@ internal sealed class SendQueue : IDisposable {
 			SendResult result = await Target.SendAsync(message, transactionId, false, Abandon.Token).ConfigureAwait(false);
 
 			if (result.Outcome == SendOutcome.Sent) {
-				if (Outage) {
-					Outage = false;
-					Log.Info("Matrix delivery recovered, sending queued notifications");
-				}
-
+				EndOutage();
 				Interlocked.Decrement(ref Pending);
 
 				return;
 			}
 
 			if (result.Outcome == SendOutcome.Dropped) {
+				EndOutage();
 				Interlocked.Decrement(ref Pending);
 
 				return;
@@ -166,7 +215,8 @@ internal sealed class SendQueue : IDisposable {
 			TimeSpan wait;
 
 			if (result.Outcome == SendOutcome.RetryAfter) {
-				wait = TimeSpan.FromTicks(Math.Min((result.Delay ?? Backoff(failures)).Ticks, MaxRetryAfter.Ticks));
+				// At least a second, so a zero retry_after cannot spin
+				wait = TimeSpan.FromTicks(Math.Clamp((result.Delay ?? Backoff(failures)).Ticks, MinRetryAfter.Ticks, MaxRetryAfter.Ticks));
 			} else {
 				if (!Outage) {
 					Outage = true;
@@ -185,26 +235,26 @@ internal sealed class SendQueue : IDisposable {
 	}
 
 	private async Task RunAsync() {
-		try {
-			await foreach (Notification notification in Queue.Reader.ReadAllAsync(Abandon.Token).ConfigureAwait(false)) {
-				try {
-					await ProcessAsync(notification).ConfigureAwait(false);
-				} catch (OperationCanceledException) when (Abandon.IsCancellationRequested) {
-					return;
-				} catch (Exception e) {
-					// Only the type is logged: an exception message could carry request details
-					LogUnexpected(e);
-					Interlocked.Decrement(ref Pending);
+		// Restarts the read loop after an unexpected error; ends once the queue is closed and drained or abandoned
+		while (!Queue.Reader.Completion.IsCompleted) {
+			try {
+				await foreach (Notification notification in Queue.Reader.ReadAllAsync(Abandon.Token).ConfigureAwait(false)) {
+					try {
+						await ProcessAsync(notification).ConfigureAwait(false);
+						ReportDrops();
+					} catch (OperationCanceledException) when (Abandon.IsCancellationRequested) {
+						return;
+					} catch (Exception e) {
+						LogUnexpected(e);
+						Interlocked.Decrement(ref Pending);
+					}
 				}
-
-				lock (Lock) {
-					ReportDrops();
-				}
+			} catch (OperationCanceledException) {
+				// Abandoned at the flush deadline
+				return;
+			} catch (Exception e) {
+				LogUnexpected(e);
 			}
-		} catch (OperationCanceledException) {
-			// Abandoned at the flush deadline
-		} catch (Exception e) {
-			LogUnexpected(e);
 		}
 	}
 }

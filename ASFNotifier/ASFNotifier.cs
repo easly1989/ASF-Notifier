@@ -23,6 +23,11 @@ internal sealed class ASFNotifier : IASF, IBotCommand2, IDisposable, IGitHubPlug
 
 	public Task OnASFInit(IReadOnlyDictionary<string, JsonElement>? additionalConfigProperties = null) {
 		try {
+			// A repeated init must not leave the previous queue and its handler behind
+			AppDomain.CurrentDomain.ProcessExit -= OnProcessExit;
+			Queue?.Dispose();
+			Queue = null;
+
 			NotifierSettings settings = NotifierSettings.Parse(additionalConfigProperties, Environment.GetEnvironmentVariable(NotifierSettings.EnvironmentTokenVariable), new AsfLog());
 			MatrixChannel? channel = null;
 

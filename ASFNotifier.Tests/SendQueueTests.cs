@@ -93,8 +93,8 @@ internal sealed class SendQueueTests {
 
 		using SendQueue queue = new(channel, log, new FakeTimeProvider(), new RecordingDelay().Wait);
 
-		// BotStopped has no formatter yet, so the formatter throws; the channel throws on the first real send
-		queue.Enqueue(new Notification(NotificationKind.BotStopped, "bot1", DateTimeOffset.UnixEpoch));
+		// An undefined kind makes the formatter throw; the channel throws on the first real send
+		queue.Enqueue(new Notification((NotificationKind) 200, "bot1", DateTimeOffset.UnixEpoch));
 		queue.Enqueue(Note("a"));
 		queue.Enqueue(Note("b"));
 		channel.WaitForCalls(2);
@@ -173,7 +173,9 @@ internal sealed class SendQueueTests {
 
 	[TestMethod]
 	internal async Task FlushGivesUpAtTheCapAndLogsOneLine() {
-		ScriptedChannel channel = new(static async token => {
+		CancellationToken seen = default;
+		ScriptedChannel channel = new(async token => {
+			seen = token;
 			await Task.Delay(Timeout.Infinite, token).ConfigureAwait(false);
 
 			return SendResult.Sent();
@@ -194,6 +196,9 @@ internal sealed class SendQueueTests {
 		Assert.AreEqual(1, channel.Calls.Count);
 		Assert.AreEqual(1, log.All.Count());
 		StringAssert.Contains(log.Warnings[0], "3 queued", StringComparison.Ordinal);
+
+		// The in-flight send was cancelled and the worker ended
+		Assert.IsTrue(SpinWait.SpinUntil(() => seen.IsCancellationRequested && queue.IsStopped, Wait));
 	}
 
 	[TestMethod]
@@ -294,6 +299,99 @@ internal sealed class SendQueueTests {
 		Assert.AreNotEqual(channel.Calls[0].TransactionId, channel.Calls[12].TransactionId);
 	}
 
+	[TestMethod]
+	internal void ThrowingLoggerNeverReachesEnqueueAndTheWorkerKeepsSending() {
+		ScriptedChannel channel = new(_ => Task.FromResult(SendResult.Sent()));
+		ThrowingLog log = new();
+
+		using SendQueue queue = new(channel, log, new FakeTimeProvider(), new RecordingDelay().Wait);
+
+		// Overflow with a logger that throws on every call
+		TaskCompletionSource gate = new();
+		ScriptedChannel blocked = new(async _ => {
+			await gate.Task.ConfigureAwait(false);
+
+			return SendResult.Sent();
+		});
+
+		using SendQueue overflow = new(blocked, log, new FakeTimeProvider(), new RecordingDelay().Wait);
+
+		overflow.Enqueue(Note("n0"));
+		blocked.WaitForCalls(1);
+
+		for (int i = 1; i <= 105; i++) {
+			Assert.IsTrue(overflow.Enqueue(Note($"n{i}")));
+		}
+
+		gate.SetResult();
+		overflow.Flush();
+		Assert.AreEqual(101, blocked.Calls.Count);
+
+		// And the worker survives a logger that throws while it reports
+		queue.Enqueue(new Notification((NotificationKind) 200, "bot1", DateTimeOffset.UnixEpoch));
+		queue.Enqueue(Note("a"));
+		channel.WaitForCalls(1);
+		queue.Flush();
+
+		Assert.AreEqual(1, channel.Calls.Count);
+	}
+
+	[TestMethod]
+	internal void ZeroRetryAfterWaitsAtLeastOneSecond() {
+		SendResult[] outcomes = [SendResult.RetryAfter(TimeSpan.Zero, "429"), SendResult.Sent()];
+		int call = 0;
+		ScriptedChannel channel = new(_ => Task.FromResult(outcomes[call++]));
+		RecordingDelay delay = new();
+
+		using SendQueue queue = new(channel, new FakeLog(), new FakeTimeProvider(), delay.Wait);
+
+		queue.Enqueue(Note("a"));
+		channel.WaitForCalls(2);
+		queue.Flush();
+
+		CollectionAssert.AreEqual(new[] { SendQueue.MinRetryAfter }, delay.Delays.ToArray());
+	}
+
+	[TestMethod]
+	internal void DroppedAfterAnOutageEndsIt() {
+		SendResult[] outcomes = [SendResult.Transient("500"), SendResult.Dropped("403 M_FORBIDDEN")];
+		int call = 0;
+		ScriptedChannel channel = new(_ => Task.FromResult(outcomes[call++]));
+		FakeLog log = new();
+
+		using SendQueue queue = new(channel, log, new FakeTimeProvider(), new RecordingDelay().Wait);
+
+		queue.Enqueue(Note("a"));
+		channel.WaitForCalls(2);
+		queue.Flush();
+
+		Assert.AreEqual(1, log.Warnings.Count);
+		Assert.AreEqual(1, log.Infos.Count);
+	}
+
+	[TestMethod]
+	internal void SecondFlushWaitsOnlyForTheRemainingBudget() {
+		ScriptedChannel channel = new(static async token => {
+			await Task.Delay(Timeout.Infinite, token).ConfigureAwait(false);
+
+			return SendResult.Sent();
+		});
+
+		using SendQueue queue = new(channel, new FakeLog(), new FakeTimeProvider(), new RecordingDelay().Wait, TimeSpan.FromMilliseconds(200));
+
+		queue.Enqueue(Note("a"));
+		channel.WaitForCalls(1);
+
+		Stopwatch watch = Stopwatch.StartNew();
+		Task first = Task.Run(queue.Flush);
+		Assert.IsTrue(SpinWait.SpinUntil(() => queue.IsShuttingDown, Wait));
+		queue.Flush();
+		first.Wait(Wait);
+
+		// Both calls together stay within one budget, not two
+		Assert.IsLessThan(TimeSpan.FromMilliseconds(1500), watch.Elapsed);
+	}
+
 	private static Notification Note(string bot) => new(NotificationKind.Test, bot, DateTimeOffset.UnixEpoch);
 }
 
@@ -351,4 +449,10 @@ internal sealed class RecordingDelay {
 			throw new TimeoutException($"Fewer than {count} delays happened");
 		}
 	}
+}
+
+internal sealed class ThrowingLog : INotifierLog {
+	public void Error(string message) => throw new InvalidOperationException(message);
+	public void Info(string message) => throw new InvalidOperationException(message);
+	public void Warning(string message) => throw new InvalidOperationException(message);
 }
