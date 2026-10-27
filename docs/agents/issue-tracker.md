@@ -1,6 +1,6 @@
 # Issue tracker: GitHub
 
-Issues and specs for this repo live as GitHub issues on `easly1989/ASF-Notifier`. Use the `gh` CLI for all operations. The design spec is `docs/SPEC.md` and the ticket order is `docs/PLAN.md`; each ticket's `Blocked by` section names its blockers as text.
+Issues and specs for this repo live as GitHub issues on `easly1989/ASF-Notifier`. Use the `gh` CLI for all operations. The design spec is `docs/SPEC.md` and the ticket order is `docs/PLAN.md`; each ticket's blockers are set as native GitHub issue dependencies (see "Blocking" below) and repeated as text in its `Blocked by` section. When the two disagree, the native dependency is canonical; fix the text.
 
 ## Conventions
 

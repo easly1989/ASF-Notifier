@@ -20,14 +20,16 @@ Requires the .NET 10 SDK. Clone with submodules: `git clone --recursive`.
 
 - Build: `dotnet build -c Release`
 - Test: `dotnet test ASFNotifier.Tests`
-- Package: `dotnet publish ASFNotifier -c Release -o out/ASFNotifier`, then zip the folder as
-  `ASFNotifier.zip` (CI does this; see `.github/workflows/publish.yml`).
+- Package: `dotnet publish ASFNotifier -c Release -o out/ASFNotifier`, then zip the folder's
+  contents (not the folder) as `ASFNotifier.zip` (CI does this; see
+  `.github/workflows/publish.yml`).
 - Run: copy the published folder to ASF's `plugins/ASFNotifier/` and restart ASF.
 
 ## Conventions
 
 - Everything in the repo is English: code, comments, docs, issues, commit messages.
-- ASF code style: tabs, `.editorconfig` copied from the template.
+- ASF code style: tabs, `.editorconfig` copied from the template. ASF's analyzers apply and
+  warnings are errors in Release; build with `-c Release` before pushing.
 - Plugin callbacks run on ASF's own flow and block it: never await network I/O inside a hook;
   enqueue and return.
 - Never log, echo or commit the Matrix access token. Test fixtures use obviously fake tokens.
