@@ -1,0 +1,13 @@
+<Solution>
+	<Configurations>
+		<BuildType Name="Debug" />
+		<BuildType Name="DebugFast" />
+		<BuildType Name="Release" />
+	</Configurations>
+
+	<Project Path="ArchiSteamFarm/ArchiSteamFarm/ArchiSteamFarm.csproj" />
+
+	<Project Path="ASFNotifier/ASFNotifier.csproj" />
+
+	<Project Path="ASFNotifier.Tests/ASFNotifier.Tests.csproj" />
+</Solution>
