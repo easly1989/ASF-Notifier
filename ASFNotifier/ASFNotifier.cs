@@ -13,8 +13,9 @@ namespace ASFNotifier;
 // ASF exports every IPlugin type by convention, no [Export] attribute needed
 #pragma warning disable CA1812 // ASF uses this class during runtime
 [UsedImplicitly]
-internal sealed class ASFNotifier : IASF, IBotCommand2, IGitHubPluginUpdates {
+internal sealed class ASFNotifier : IASF, IBotCommand2, IDisposable, IGitHubPluginUpdates {
 	private NotifyTestCommand? NotifyTest;
+	private SendQueue? Queue;
 
 	public string Name => nameof(ASFNotifier);
 	public string RepositoryName => "easly1989/ASF-Notifier";
@@ -22,11 +23,20 @@ internal sealed class ASFNotifier : IASF, IBotCommand2, IGitHubPluginUpdates {
 
 	public Task OnASFInit(IReadOnlyDictionary<string, JsonElement>? additionalConfigProperties = null) {
 		try {
+			// A repeated init must not leave the previous queue and its handler behind
+			AppDomain.CurrentDomain.ProcessExit -= OnProcessExit;
+			Queue?.Dispose();
+			Queue = null;
+
 			NotifierSettings settings = NotifierSettings.Parse(additionalConfigProperties, Environment.GetEnvironmentVariable(NotifierSettings.EnvironmentTokenVariable), new AsfLog());
 			MatrixChannel? channel = null;
 
 			if (settings is { IsConfigured: true, HomeserverUrl: { } homeserver, RoomId: { } roomId, AccessToken: { } token }) {
 				channel = new MatrixChannel(MatrixChannel.CreateHttpClient(), homeserver, roomId, token, TimeProvider.System, new AsfLog());
+				Queue = new SendQueue(channel, new AsfLog(), TimeProvider.System);
+
+				// ASF has no shutdown hook; it exits through Environment.Exit, which raises ProcessExit
+				AppDomain.CurrentDomain.ProcessExit += OnProcessExit;
 			}
 
 			NotifyTest = new NotifyTestCommand(settings, channel, TimeProvider.System, null);
@@ -35,6 +45,11 @@ internal sealed class ASFNotifier : IASF, IBotCommand2, IGitHubPluginUpdates {
 		}
 
 		return Task.CompletedTask;
+	}
+
+	public void Dispose() {
+		AppDomain.CurrentDomain.ProcessExit -= OnProcessExit;
+		Queue?.Dispose();
 	}
 
 	public async Task<string?> OnBotCommand(Bot bot, EAccess access, string message, string[] args, ulong steamID = 0) {
@@ -59,6 +74,8 @@ internal sealed class ASFNotifier : IASF, IBotCommand2, IGitHubPluginUpdates {
 
 		return Task.CompletedTask;
 	}
+
+	private void OnProcessExit(object? sender, EventArgs e) => Queue?.Flush();
 
 	internal static bool IsMasterOrHigher(EAccess access) => access >= EAccess.Master;
 

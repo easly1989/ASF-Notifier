@@ -7,7 +7,7 @@ namespace ASFNotifier.Tests;
 internal sealed class PluginTests {
 	[TestMethod]
 	internal void PluginIdentifiesItself() {
-		ASFNotifier plugin = new();
+		using ASFNotifier plugin = new();
 
 		Assert.AreEqual("ASFNotifier", plugin.Name);
 		Assert.AreEqual("easly1989/ASF-Notifier", plugin.RepositoryName);
