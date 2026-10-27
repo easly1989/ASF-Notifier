@@ -24,7 +24,8 @@ internal sealed record Notification(
 	TimeSpan? Duration = null,
 	string? FromVersion = null,
 	string? ToVersion = null,
-	int? Count = null
+	int? Count = null,
+	bool LoginFailed = false // the reason came from the login result (spec section 8)
 );
 
 internal sealed record FormattedMessage(string PlainText, string Html);

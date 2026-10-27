@@ -156,7 +156,8 @@ sealed record Notification(
     string? RequiredInput = null,    // e.g. "TwoFactorAuthentication"
     TimeSpan? Duration = null,       // disconnected-for / reconnected-after
     string? FromVersion = null, string? ToVersion = null,
-    int? Count = null);              // Suppressed
+    int? Count = null,               // Suppressed
+    bool LoginFailed = false);       // BotStoppedByAsf: the reason came from the login result (section 8)
 ```
 
 The config key for each kind is its name (`"BotStoppedByAsf"`, …); `Suppressed` and `Test`
@@ -248,6 +249,9 @@ cancels the timer.
 - `OnBotDisconnected(bot, reason)`: record `DisconnectedAt` (only if not already set for this
   outage) and the reason (only if it is not `OK`/`Invalid`). If `KeepRunning` is `false`, go
   to 5.3; otherwise 5.2.
+- A disconnect that arrives after a stop was already classified starts a new outage (fresh
+  state): a stopped bot only disconnects again after it was started again, and a bot started
+  again can be stopped again before it ever logs on (a headless bot that still needs input).
 
 ### 5.2 Disconnected for N minutes, then reconnected
 
@@ -279,12 +283,16 @@ raise no signal; their stops arrive as `BotStopped`, which is off by default.
 `Error`-level entry written from one of ASF's give-up sites: `HandleLoginResult()`,
 `OnLoggedOff()`, `OnLoggedOn()`, `OnConnected()`, `RequestInput()`. ASF writes every entry as
 `"{method}() {message}"`; the method name is not localised. It also records the latest
-`HandleLoginResult()` / `OnLoggedOff()` entry at any level, for the reason. It stores only
-time, method and the parsed `EResult`, never forwards or re-logs log text.
+`HandleLoginResult()` / `OnLoggedOff()` entry at any level that names an `EResult`, for the
+reason (an entry without one, such as the final "Received InvalidPassword error code … times"
+in a language that translates it, must not wipe the reason logged by the attempt before). It
+stores only time, method and the parsed `EResult`, never forwards or re-logs log text.
 
-- Registration: add a rule from `Info` to `Fatal` for all loggers to the current
-  `LogManager.Configuration`, then call `LogManager.ReconfigExistingLoggers()` so loggers that
-  already exist pick the target up.
+- Registration: insert a rule from `Info` to `Fatal` for all loggers at the top of the current
+  `LogManager.Configuration` (so a `final` rule in a custom `NLog.config` cannot hide entries
+  from it), then call `LogManager.ReconfigExistingLoggers()` so loggers that already exist pick
+  the target up. Each registration uses a new target instance, because the configuration being
+  replaced closes the targets it held.
 - Lifecycle: subscribe to `LogManager.ConfigurationChanged` and register the target again on
   the new configuration (ASF or the user can replace the NLog config at runtime).
 - `EResult` parsing: split the message into tokens on non-alphanumeric characters and take
@@ -293,8 +301,11 @@ time, method and the parsed `EResult`, never forwards or re-logs log text.
   `Invalid`. `EResult` values are formatted by name, so this works in every ASF language.
 
 **Classification**, run when a stop is detected (`KeepRunning == false` in
-`OnBotDisconnected`, or the 5.2 timer finding it so), with `T` = the recorded
-`DisconnectedAt`:
+`OnBotDisconnected`, or the 5.2 timer finding it so), with `T` = the time of the disconnect
+that revealed the stop: the hook's own time, or for the timer the latest recorded disconnect.
+Not the first disconnect of the outage: ASF may retry a failing login for minutes (rate-limit
+cooldowns) before it gives up, and the give-up error sits next to the last disconnect. Not the
+time of classifying either.
 
 1. Shutdown flag set → nothing.
 2. `StopNotified` already set for this stop → nothing.
@@ -515,7 +526,10 @@ returns at once.
   (ordering, `DropOldest`, flush bound), and `MatrixChannel` against a **fake
   `HttpMessageHandler`** that records requests and replays canned responses (200, 429 with
   `retry_after_ms`, 401, 403, 500, timeout, degraded and recovery).
-- **What is not unit-tested:** the thin ASF adapter and the NLog registration. They are
+- **NLog tap:** tested against a real NLog `LogFactory` with an in-memory configuration,
+  including a configuration reload and a `final` rule. The tap takes the `LogFactory`; the
+  plugin passes `LogManager.LogFactory`.
+- **What is not unit-tested:** the thin ASF adapter and the signal registration. They are
   verified by hand against a real ASF 6.3.10.6 with a test bot and a test Matrix room; each
   ticket lists the manual check.
 - **Shape rule:** ASF is referenced with `ExcludeAssets="all" Private="false"`; keeping ASF
@@ -544,6 +558,11 @@ Based on the template's workflows, trimmed:
 
 - **Stop classification (section 5.3)** is designed from the source; ticket #3 verifies it on
   a real instance before it is relied on.
+- **Bot config edit.** `OnConfigChanged` calls `Stop(true)` and then `InitStart()`, which starts
+  the bot again in the background. The disconnect callback may therefore reach the hook with
+  `KeepRunning` already `true` again, which is a plain disconnect (5.2), not a stop: no
+  `BotStopped`, and nothing at all if the bot logs on within N minutes. Ticket #3's manual
+  check 4 settles which one happens.
 - The original assumption that `OnBotDisconnected`'s `EResult` and `KeepRunning == false` are
   enough to detect "login failed, ASF stopped the bot" does not hold (fact 3); the NLog tap
   in section 5.3 is the replacement, and it is the only NLog use in v1.
