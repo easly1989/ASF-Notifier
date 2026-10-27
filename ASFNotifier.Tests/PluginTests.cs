@@ -2,10 +2,11 @@ using Microsoft.VisualStudio.TestTools.UnitTesting;
 
 namespace ASFNotifier.Tests;
 
+#pragma warning disable CA1812 // MSTest uses this class during runtime
 [TestClass]
-public sealed class PluginTests {
+internal sealed class PluginTests {
 	[TestMethod]
-	public void Plugin_Identifies_Itself() {
+	internal void PluginIdentifiesItself() {
 		ASFNotifier plugin = new();
 
 		Assert.AreEqual("ASFNotifier", plugin.Name);
@@ -13,3 +14,4 @@ public sealed class PluginTests {
 		Assert.IsGreaterThan(0, plugin.Version.Major);
 	}
 }
+#pragma warning restore CA1812 // MSTest uses this class during runtime
