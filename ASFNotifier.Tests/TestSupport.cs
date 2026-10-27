@@ -35,16 +35,30 @@ internal sealed class FakeLog : INotifierLog {
 }
 
 internal sealed class FakeTimeProvider : TimeProvider {
+	// A test may dispose a timer from another thread while Advance runs
+	private readonly Lock Lock = new();
+
 	private readonly List<FakeTimer> Timers = [];
 
-	internal int ArmedTimers => Timers.Count(static timer => timer.Due != null);
+	internal int ArmedTimers {
+		get {
+			lock (Lock) {
+				return Timers.Count(static timer => timer.Due != null);
+			}
+		}
+	}
+
 	internal int CreatedTimers { get; private set; }
 	internal DateTimeOffset Now { get; set; } = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
 
 	public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period) {
 		FakeTimer timer = new(this, callback, state);
-		CreatedTimers++;
-		Timers.Add(timer);
+
+		lock (Lock) {
+			CreatedTimers++;
+			Timers.Add(timer);
+		}
+
 		timer.Change(dueTime, period);
 
 		return timer;
@@ -56,12 +70,24 @@ internal sealed class FakeTimeProvider : TimeProvider {
 	internal void Advance(TimeSpan span) {
 		DateTimeOffset end = Now + span;
 
-		while (Timers.Where(timer => timer.Due <= end).OrderBy(static timer => timer.Due).FirstOrDefault() is { Due: { } due } next) {
+		while (NextDue(end) is { Due: { } due } next) {
 			Now = due;
 			next.Fire();
 		}
 
 		Now = end;
+	}
+
+	private FakeTimer? NextDue(DateTimeOffset end) {
+		lock (Lock) {
+			return Timers.Where(timer => timer.Due <= end).OrderBy(static timer => timer.Due).FirstOrDefault();
+		}
+	}
+
+	private void Remove(FakeTimer timer) {
+		lock (Lock) {
+			Timers.Remove(timer);
+		}
 	}
 
 	private sealed class FakeTimer(FakeTimeProvider owner, TimerCallback callback, object? state) : ITimer {
@@ -78,7 +104,7 @@ internal sealed class FakeTimeProvider : TimeProvider {
 
 		public void Dispose() {
 			Due = null;
-			owner.Timers.Remove(this);
+			owner.Remove(this);
 		}
 
 		public ValueTask DisposeAsync() {

@@ -10,7 +10,9 @@ internal readonly record struct BotStatus(bool KeepRunning, bool IsLoggedOn, str
 
 // The plugin side of the disconnect timer, called on a timer thread
 internal interface IWatcherHost {
-	void Emit(Notification notification);
+	// true when the notification was accepted for sending: it passed the filter (and, from #8, dedupe and the hourly
+	// cap) and was queued or held. BotReconnected follows only an accepted BotDisconnected.
+	bool Emit(Notification notification);
 
 	// null when ASF no longer has the bot
 	BotStatus? GetStatus(string botName);
@@ -23,6 +25,9 @@ internal interface IWatcherHost {
 internal sealed class ConnectionWatcher : IDisposable {
 	private readonly IWatcherHost Host;
 	private readonly Func<bool> IsShuttingDown;
+
+	// Lock order: Lock may be held while taking the tap's lock and, through Host.Emit, the filter, the stop hold and the
+	// send queue. None of them calls back into the watcher, so they never take Lock while holding their own.
 	private readonly Lock Lock = new();
 	private readonly TimeSpan NotifyAfter;
 
@@ -126,8 +131,9 @@ internal sealed class ConnectionWatcher : IDisposable {
 
 			// Read outside the lock; an outage that ends meanwhile is caught below
 			BotStatus? status = Host.GetStatus(botName);
-			Notification? notification;
 
+			// Emits under the lock: a log-on racing this callback waits, so its BotReconnected is queued after the
+			// BotDisconnected and sees whether that one was accepted
 			lock (Lock) {
 				// Logged on, stopped or destroyed while this callback was on its way
 				if (!Outages.TryGetValue(botName, out Outage? current) || (current != outage)) {
@@ -135,31 +141,24 @@ internal sealed class ConnectionWatcher : IDisposable {
 				}
 
 				switch (status) {
-					case null:
-						EndOutage(botName);
-
-						return;
 					case { KeepRunning: false } stopped:
 						// Stopped meanwhile without a hook: no hook reason, the tap supplies it. T is the latest disconnect,
 						// where ASF's give-up error sits, not the first one of the outage
-						notification = ClassifyStop(botName, outage.LastDisconnectAt, stopped.RequiredInput, EResult.OK);
+						if (ClassifyStop(botName, outage.LastDisconnectAt, stopped.RequiredInput, EResult.OK) is { } stop) {
+							Host.Emit(stop);
+						}
 
 						break;
 					case { IsLoggedOn: false }:
-						outage.Notified = true;
-						notification = new Notification(NotificationKind.BotDisconnected, botName, now, outage.Reason?.ToString(), Duration: now - outage.DisconnectedAt);
+						outage.Notified = Host.Emit(new Notification(NotificationKind.BotDisconnected, botName, now, outage.Reason?.ToString(), Duration: now - outage.DisconnectedAt));
 
 						break;
 					default:
-						// A log-on callback was missed
+						// ASF no longer has the bot, or a log-on callback was missed
 						EndOutage(botName);
 
-						return;
+						break;
 				}
-			}
-
-			if (notification != null) {
-				Host.Emit(notification);
 			}
 		} catch (Exception e) {
 			// An exception escaping a timer callback would take ASF down

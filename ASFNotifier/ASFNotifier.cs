@@ -162,10 +162,12 @@ internal sealed class ASFNotifier : IASF, IBot, IBotCommand2, IBotConnection, ID
 	internal static bool IsMasterOrHigher(EAccess access) => access >= EAccess.Master;
 
 	// Disconnect timer, on a timer thread
-	void IWatcherHost.Emit(Notification notification) {
-		ASF.ArchiLogger.LogGenericDebug($"{notification.BotName} disconnect timer → {notification.Kind}{(notification.Reason != null ? $" ({notification.Reason})" : "")}", nameof(ASFNotifier));
+	bool IWatcherHost.Emit(Notification notification) {
+		bool accepted = Emit(notification);
 
-		Emit(notification);
+		ASF.ArchiLogger.LogGenericDebug($"{notification.BotName} disconnect timer → {notification.Kind}{(notification.Reason != null ? $" ({notification.Reason})" : "")}{(accepted ? "" : ", not sent")}", nameof(ASFNotifier));
+
+		return accepted;
 	}
 
 	BotStatus? IWatcherHost.GetStatus(string botName) => Bot.BotsReadOnly?.GetValueOrDefault(botName) is { } bot ? new BotStatus(bot.KeepRunning, bot.IsConnectedAndLoggedOn, RequiredInputOf(bot)) : null;
@@ -174,19 +176,20 @@ internal sealed class ASFNotifier : IASF, IBot, IBotCommand2, IBotConnection, ID
 
 	private static string? RequiredInputOf(Bot bot) => bot.RequiredInput == ASF.EUserInputType.None ? null : bot.RequiredInput.ToString();
 
-	private void Emit(Notification? notification) {
+	// true when accepted for sending (IWatcherHost.Emit); the rate limiter (#8) adds its verdict here
+	private bool Emit(Notification? notification) {
 		if ((notification == null) || (Settings == null) || !Filter.Allows(notification, Settings)) {
-			return;
+			return false;
 		}
 
 		if (notification.Kind is NotificationKind.BotStopped or NotificationKind.BotStoppedByAsf) {
 			Hold.Add(notification);
 			HoldTimer?.Change(StopHold.HoldTime, Timeout.InfiniteTimeSpan);
 
-			return;
+			return true;
 		}
 
-		Queue?.Enqueue(notification);
+		return Queue?.Enqueue(notification) ?? false;
 	}
 
 	// Timer callback: sends the held stops that are due unless ASF is going down, then re-arms for the rest

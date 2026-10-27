@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using SteamKit2;
 
@@ -366,6 +367,55 @@ internal sealed class ConnectionWatcherTests {
 		Assert.AreEqual(0, Host.Emitted.Count);
 	}
 
+	// BotReconnected follows only a BotDisconnected that was accepted: filtered out, rate-limited or dropped means none
+	[TestMethod]
+	internal void ARejectedDisconnectedIsNotFollowedByReconnected() {
+		using ConnectionWatcher watcher = Watcher();
+
+		watcher.OnDisconnected("bot1", EResult.NoConnection, true, null);
+		Host.Accepts = false;
+		Time.Advance(TimeSpan.FromMinutes(5));
+
+		Assert.AreEqual(NotificationKind.BotDisconnected, Host.Emitted.Single().Kind);
+		Assert.IsNull(watcher.OnLoggedOn("bot1"));
+		Assert.IsFalse(watcher.IsTracked("bot1"));
+	}
+
+	[TestMethod]
+	internal void ARejectedDisconnectedIsNotOfferedAgainInTheSameOutage() {
+		using ConnectionWatcher watcher = Watcher();
+
+		watcher.OnDisconnected("bot1", EResult.NoConnection, true, null);
+		Host.Accepts = false;
+		Time.Advance(TimeSpan.FromMinutes(5));
+		Host.Accepts = true;
+		watcher.OnDisconnected("bot1", EResult.NoConnection, true, null);
+		Time.Advance(TimeSpan.FromMinutes(20));
+
+		Assert.AreEqual(1, Host.Emitted.Count);
+		Assert.AreEqual(1, Time.CreatedTimers);
+	}
+
+	// The timer emits under the watcher lock, so a log-on racing it waits and its BotReconnected is queued second
+	[TestMethod]
+	internal async Task ALogOnRacingTheTimerWaitsForItsBotDisconnected() {
+		using ConnectionWatcher watcher = Watcher();
+		Task<Notification?>? logOn = null;
+		bool loggedOnDuringEmit = true;
+
+		Host.OnEmit = _ => {
+			logOn = Task.Run(() => watcher.OnLoggedOn("bot1"));
+			loggedOnDuringEmit = logOn.Wait(TimeSpan.FromMilliseconds(200));
+		};
+
+		watcher.OnDisconnected("bot1", EResult.NoConnection, true, null);
+		Time.Advance(TimeSpan.FromMinutes(5));
+
+		Assert.IsFalse(loggedOnDuringEmit);
+		Assert.IsNotNull(logOn);
+		Assert.AreEqual(NotificationKind.BotReconnected, (await logOn.ConfigureAwait(false))?.Kind);
+	}
+
 	private ConnectionWatcher Watcher(TimeSpan? notifyAfter = null) => new(Tap, () => ShuttingDown, Time, notifyAfter ?? TimeSpan.FromMinutes(5), Host);
 
 	private sealed class FakeGiveUpLog : IGiveUpLog {
@@ -376,8 +426,14 @@ internal sealed class ConnectionWatcherTests {
 	}
 
 	private sealed class FakeHost : IWatcherHost {
+		// What Emit answers: false stands for a filter, rate limit or full queue that drops the notification
+		internal bool Accepts { get; set; } = true;
+
+		// Every notification offered, accepted or not
 		internal List<Notification> Emitted { get; } = [];
+
 		internal List<Exception> Errors { get; } = [];
+		internal Action<Notification>? OnEmit { get; set; }
 
 		// Every bot not in Statuses: still running, not logged on
 		internal BotStatus? Status { get; set; } = new BotStatus(true, false, null);
@@ -385,7 +441,12 @@ internal sealed class ConnectionWatcherTests {
 		internal Exception? StatusError { get; set; }
 		internal Dictionary<string, BotStatus> Statuses { get; } = [];
 
-		public void Emit(Notification notification) => Emitted.Add(notification);
+		public bool Emit(Notification notification) {
+			Emitted.Add(notification);
+			OnEmit?.Invoke(notification);
+
+			return Accepts;
+		}
 
 		public BotStatus? GetStatus(string botName) {
 			if (StatusError != null) {
