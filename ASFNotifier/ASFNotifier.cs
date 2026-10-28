@@ -68,8 +68,8 @@ internal sealed class ASFNotifier : IASF, IBot, IBotCardsFarmerInfo, IBotCommand
 			Settings = settings;
 			NotifyTest = new NotifyTestCommand(settings, channel, TimeProvider.System, null);
 
-				// Last: Settings and Queue are ready for the Emit
-				CheckAsfVersion();
+			// Last: Settings and Queue are ready for the Emit
+			CheckAsfVersion();
 		} catch (Exception e) {
 			ASF.ArchiLogger.LogGenericException(e);
 		}
