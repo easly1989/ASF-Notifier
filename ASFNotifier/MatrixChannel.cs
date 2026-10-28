@@ -1,10 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
-using System.Net.Http.Json;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -23,22 +23,22 @@ internal sealed class MatrixChannel : INotificationChannel {
 	private readonly Lock Lock = new();
 	private readonly INotifierLog Log;
 	private readonly string RoomId;
-	private readonly TimeProvider TimeProvider;
+	private readonly Clock Clock;
 
 	private bool Degraded;
 	private DateTimeOffset LastFailure;
 
-	internal MatrixChannel(HttpClient httpClient, string homeserverUrl, string roomId, string accessToken, TimeProvider timeProvider, INotifierLog log) {
+	internal MatrixChannel(HttpClient httpClient, string homeserverUrl, string roomId, string accessToken, Clock clock, INotifierLog log) {
 		HttpClient = httpClient;
 		HomeserverUrl = homeserverUrl.TrimEnd('/');
 		RoomId = roomId;
 		AccessToken = accessToken;
-		TimeProvider = timeProvider;
+		Clock = clock;
 		Log = log;
 	}
 
 	// Built without any logging handler on purpose: it would see the bearer token
-	internal static HttpClient CreateHttpClient(HttpMessageHandler? handler = null) => handler == null ? new HttpClient { MaxResponseContentBufferSize = MaxResponseBytes, Timeout = RequestTimeout } : new HttpClient(handler, false) { MaxResponseContentBufferSize = MaxResponseBytes, Timeout = RequestTimeout };
+	internal static HttpClient CreateHttpClient(HttpMessageHandler? handler = null) => handler == null ? new HttpClient { Timeout = RequestTimeout } : new HttpClient(handler, false) { Timeout = RequestTimeout };
 
 	public async Task<SendResult> SendAsync(FormattedMessage message, string transactionId, bool bypassDegraded, CancellationToken cancellationToken) {
 		ArgumentNullException.ThrowIfNull(message);
@@ -46,29 +46,29 @@ internal sealed class MatrixChannel : INotificationChannel {
 
 		if (!bypassDegraded) {
 			lock (Lock) {
-				if (Degraded && ((TimeProvider.GetUtcNow() - LastFailure) < DegradedRetryGap)) {
+				if (Degraded && ((Clock.GetUtcNow() - LastFailure) < DegradedRetryGap)) {
 					return SendResult.Dropped("degraded");
 				}
 			}
 		}
 
-		Dictionary<string, string> body = new() {
-			["msgtype"] = "m.notice",
-			["body"] = message.PlainText,
-			["format"] = "org.matrix.custom.html",
-			["formatted_body"] = message.Html
-		};
-
 		using HttpRequestMessage request = new(HttpMethod.Put, new Uri($"{HomeserverUrl}/_matrix/client/v3/rooms/{Uri.EscapeDataString(RoomId)}/send/m.room.message/{Uri.EscapeDataString(transactionId)}", UriKind.Absolute)) {
-			Content = JsonContent.Create(body)
+			Content = CreateBody(message)
 		};
 
 		request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", AccessToken);
 
-		try {
-			using HttpResponseMessage response = await HttpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+		// HttpClient.Timeout stops at the headers once they are read separately; this one covers the body too
+		using CancellationTokenSource timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+		timeout.CancelAfter(RequestTimeout);
 
-			string responseBody = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+		try {
+			// The body is capped here, not with HttpClient.MaxResponseContentBufferSize: ASF's trimmed Windows builds
+			// drop that setter (issue #23). Too large throws HttpRequestException, like the setter did
+			using HttpResponseMessage response = await HttpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token).ConfigureAwait(false);
+			await response.Content.LoadIntoBufferAsync(MaxResponseBytes, timeout.Token).ConfigureAwait(false);
+
+			string responseBody = await response.Content.ReadAsStringAsync(timeout.Token).ConfigureAwait(false);
 
 			return Interpret(response, responseBody);
 		} catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested) {
@@ -79,9 +79,28 @@ internal sealed class MatrixChannel : INotificationChannel {
 		}
 	}
 
+	// Written by hand: ASF's trimmed builds disable reflection-based JSON serialization (issue #23)
+	private static ByteArrayContent CreateBody(FormattedMessage message) {
+		using MemoryStream stream = new();
+
+		using (Utf8JsonWriter writer = new(stream)) {
+			writer.WriteStartObject();
+			writer.WriteString("msgtype", "m.notice");
+			writer.WriteString("body", message.PlainText);
+			writer.WriteString("format", "org.matrix.custom.html");
+			writer.WriteString("formatted_body", message.Html);
+			writer.WriteEndObject();
+		}
+
+		ByteArrayContent content = new(stream.ToArray());
+		content.Headers.ContentType = new MediaTypeHeaderValue("application/json") { CharSet = "utf-8" };
+
+		return content;
+	}
+
 	// Only an M_* style code is echoed, so a server that reflects the token in its error body cannot leak it
 	private static string? ReadErrorCode(JsonElement root) {
-		if ((root.ValueKind != JsonValueKind.Object) || !root.TryGetProperty("errcode", out JsonElement code) || (code.ValueKind != JsonValueKind.String)) {
+		if ((root.ValueKind != JsonValueKind.Object) || !root.TryGetMember("errcode", out JsonElement code) || (code.ValueKind != JsonValueKind.String)) {
 			return null;
 		}
 
@@ -146,7 +165,7 @@ internal sealed class MatrixChannel : INotificationChannel {
 
 	private void EnterDegraded(string error, bool includeRoom) {
 		lock (Lock) {
-			LastFailure = TimeProvider.GetUtcNow();
+			LastFailure = Clock.GetUtcNow();
 
 			if (Degraded) {
 				return;
@@ -158,16 +177,23 @@ internal sealed class MatrixChannel : INotificationChannel {
 	}
 
 	private TimeSpan? ReadRetryAfter(HttpResponseMessage response, JsonElement root) {
-		if ((root.ValueKind == JsonValueKind.Object) && root.TryGetProperty("retry_after_ms", out JsonElement ms) && (ms.ValueKind == JsonValueKind.Number) && ms.TryGetDouble(out double milliseconds)) {
-			return double.IsNaN(milliseconds) ? null : TimeSpan.FromMilliseconds(Math.Clamp(milliseconds, 0, MaxRetryAfter.TotalMilliseconds));
+		if ((root.ValueKind == JsonValueKind.Object) && root.TryGetMember("retry_after_ms", out JsonElement ms) && (ms.ValueKind == JsonValueKind.Number) && ms.TryGetDouble(out double milliseconds)) {
+			return double.IsNaN(milliseconds) ? null : TimeSpan.FromMilliseconds(Math.Min(Math.Max(milliseconds, 0), MaxRetryAfter.TotalMilliseconds));
 		}
 
-		RetryConditionHeaderValue? header = response.Headers.RetryAfter;
-
-		if (header?.Delta is { } delta) {
-			return Cap(delta);
+		// Read by hand: the trimmed ASF has no HttpResponseHeaders.RetryAfter (issue #23). Delay-seconds or an HTTP date
+		if (!response.Headers.TryGetValues("Retry-After", out IEnumerable<string>? values)) {
+			return null;
 		}
 
-		return header?.Date is { } date ? Cap(date - TimeProvider.GetUtcNow()) : null;
+		foreach (string value in values) {
+			if (int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out int seconds)) {
+				return Cap(TimeSpan.FromSeconds(seconds));
+			}
+
+			return DateTimeOffset.TryParseExact(value, "r", CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out DateTimeOffset date) ? Cap(date - Clock.GetUtcNow()) : null;
+		}
+
+		return null;
 	}
 }

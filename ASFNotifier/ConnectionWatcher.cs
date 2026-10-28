@@ -36,12 +36,12 @@ internal sealed class ConnectionWatcher : IDisposable {
 	private readonly Dictionary<string, Outage> Outages = new(StringComparer.Ordinal);
 
 	private readonly IGiveUpLog Tap;
-	private readonly TimeProvider TimeProvider;
+	private readonly Clock Clock;
 
-	internal ConnectionWatcher(IGiveUpLog tap, Func<bool> isShuttingDown, TimeProvider timeProvider, TimeSpan notifyAfter, IWatcherHost host) {
+	internal ConnectionWatcher(IGiveUpLog tap, Func<bool> isShuttingDown, Clock clock, TimeSpan notifyAfter, IWatcherHost host) {
 		Tap = tap;
 		IsShuttingDown = isShuttingDown;
-		TimeProvider = timeProvider;
+		Clock = clock;
 		NotifyAfter = notifyAfter;
 		Host = host;
 	}
@@ -69,14 +69,14 @@ internal sealed class ConnectionWatcher : IDisposable {
 	}
 
 	internal Notification? OnDisconnected(string botName, EResult reason, bool keepRunning, string? requiredInput) {
-		DateTimeOffset now = TimeProvider.GetUtcNow();
+		DateTimeOffset now = Clock.GetUtcNow();
 
 		lock (Lock) {
 			if (keepRunning) {
 				if (!Outages.TryGetValue(botName, out Outage? outage)) {
 					// One timer per outage: the clock runs from its first disconnect, and an outage is reported once
 					Outage started = new(now);
-					started.Timer = TimeProvider.CreateTimer(_ => OnTimer(botName, started), null, NotifyAfter, Timeout.InfiniteTimeSpan);
+					started.Timer = Clock.CreateTimer(_ => OnTimer(botName, started), null, NotifyAfter, Timeout.InfiniteTimeSpan);
 					Outages[botName] = outage = started;
 				}
 
@@ -97,7 +97,7 @@ internal sealed class ConnectionWatcher : IDisposable {
 
 	// The bot runs again: what ASF logged before must not explain a later stop
 	internal Notification? OnLoggedOn(string botName) {
-		DateTimeOffset now = TimeProvider.GetUtcNow();
+		DateTimeOffset now = Clock.GetUtcNow();
 
 		lock (Lock) {
 			Outages.TryGetValue(botName, out Outage? outage);
@@ -128,7 +128,7 @@ internal sealed class ConnectionWatcher : IDisposable {
 	// Spec section 5.2, on a timer thread
 	private void OnTimer(string botName, Outage outage) {
 		try {
-			DateTimeOffset now = TimeProvider.GetUtcNow();
+			DateTimeOffset now = Clock.GetUtcNow();
 
 			// Read outside the lock; an outage that ends meanwhile is caught below
 			BotStatus? status = Host.GetStatus(botName);
@@ -176,6 +176,6 @@ internal sealed class ConnectionWatcher : IDisposable {
 		internal EResult? Reason { get; set; }
 
 		// Spent once it fired: a later disconnect of the same outage starts no other
-		internal ITimer? Timer { get; set; }
+		internal IClockTimer? Timer { get; set; }
 	}
 }

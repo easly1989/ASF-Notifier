@@ -20,9 +20,9 @@ namespace ASFNotifier;
 internal sealed class ASFNotifier : IASF, IBot, IBotCardsFarmerInfo, IBotCommand2, IBotConnection, IBotModules, IDisposable, IGitHubPluginUpdates, IWatcherHost {
 	private readonly BotConfigStore BotConfigs = new();
 	private readonly StopHold Hold = new();
-	private readonly RateLimiter Limiter = new(TimeProvider.System);
+	private readonly RateLimiter Limiter = new(Clock.System);
 
-	private ITimer? HoldTimer;
+	private IClockTimer? HoldTimer;
 	private NotifyTestCommand? NotifyTest;
 	private SendQueue? Queue;
 	private NotifierSettings? Settings;
@@ -56,11 +56,11 @@ internal sealed class ASFNotifier : IASF, IBot, IBotCardsFarmerInfo, IBotCommand
 			MatrixChannel? channel = null;
 
 			if (settings is { IsConfigured: true, HomeserverUrl: { } homeserver, RoomId: { } roomId, AccessToken: { } token }) {
-				channel = new MatrixChannel(MatrixChannel.CreateHttpClient(), homeserver, roomId, token, TimeProvider.System, new AsfLog());
-				Queue = new SendQueue(channel, new AsfLog(), TimeProvider.System);
-				Tap = new GiveUpLogTap(LogManager.LogFactory, TimeProvider.System);
-				Watcher = new ConnectionWatcher(Tap, () => IsShuttingDown, TimeProvider.System, TimeSpan.FromMinutes(settings.DisconnectedNotifyAfterMinutes), this);
-				HoldTimer = TimeProvider.System.CreateTimer(_ => ReleaseHeldStops(), null, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
+				channel = new MatrixChannel(MatrixChannel.CreateHttpClient(), homeserver, roomId, token, Clock.System, new AsfLog());
+				Queue = new SendQueue(channel, new AsfLog(), Clock.System);
+				Tap = new GiveUpLogTap(LogManager.LogFactory, Clock.System);
+				Watcher = new ConnectionWatcher(Tap, () => IsShuttingDown, Clock.System, TimeSpan.FromMinutes(settings.DisconnectedNotifyAfterMinutes), this);
+				HoldTimer = Clock.System.CreateTimer(_ => ReleaseHeldStops(), null, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
 				RegisterShutdownSignals();
 
 				// ASF has no shutdown hook; it exits through Environment.Exit, which raises ProcessExit
@@ -68,7 +68,7 @@ internal sealed class ASFNotifier : IASF, IBot, IBotCardsFarmerInfo, IBotCommand
 			}
 
 			Settings = settings;
-			NotifyTest = new NotifyTestCommand(settings, channel, TimeProvider.System, null);
+			NotifyTest = new NotifyTestCommand(settings, channel, Clock.System, null);
 
 			// Last: Settings and Queue are ready for the Emit
 			CheckAsfVersion();
@@ -94,19 +94,19 @@ internal sealed class ASFNotifier : IASF, IBot, IBotCardsFarmerInfo, IBotCommand
 	public Task OnBotFarmingFinished(Bot bot, bool farmedSomething) {
 		ArgumentNullException.ThrowIfNull(bot);
 
-		return EmitFarming(FarmingSource.OnFinished(bot.BotName, farmedSomething, TimeProvider.System.GetUtcNow()));
+		return EmitFarming(FarmingSource.OnFinished(bot.BotName, farmedSomething, Clock.System.GetUtcNow()));
 	}
 
 	public Task OnBotFarmingStarted(Bot bot) {
 		ArgumentNullException.ThrowIfNull(bot);
 
-		return EmitFarming(FarmingSource.OnStarted(bot.BotName, TimeProvider.System.GetUtcNow()));
+		return EmitFarming(FarmingSource.OnStarted(bot.BotName, Clock.System.GetUtcNow()));
 	}
 
 	public Task OnBotFarmingStopped(Bot bot) {
 		ArgumentNullException.ThrowIfNull(bot);
 
-		return EmitFarming(FarmingSource.OnStopped(bot.BotName, TimeProvider.System.GetUtcNow()));
+		return EmitFarming(FarmingSource.OnStopped(bot.BotName, Clock.System.GetUtcNow()));
 	}
 
 	public async Task<string?> OnBotCommand(Bot bot, EAccess access, string message, string[] args, ulong steamID = 0) {
@@ -236,7 +236,7 @@ internal sealed class ASFNotifier : IASF, IBot, IBotCardsFarmerInfo, IBotCommand
 			case AsfVersionAction.None:
 				return;
 			case AsfVersionAction.Updated when decision.Stored != null:
-				Emit(AsfVersionSource.Updated(decision.Stored, current, TimeProvider.System.GetUtcNow()));
+				Emit(AsfVersionSource.Updated(decision.Stored, current, Clock.System.GetUtcNow()));
 
 				break;
 			case AsfVersionAction.Downgrade:
@@ -283,7 +283,7 @@ internal sealed class ASFNotifier : IASF, IBot, IBotCardsFarmerInfo, IBotCommand
 	// Timer callback: sends the held stops that are due unless ASF is going down, then re-arms for the rest
 	private void ReleaseHeldStops() {
 		try {
-			DateTimeOffset now = TimeProvider.System.GetUtcNow();
+			DateTimeOffset now = Clock.System.GetUtcNow();
 			int runningBots = 0;
 
 			foreach (Bot bot in Bot.BotsReadOnly?.Values ?? []) {

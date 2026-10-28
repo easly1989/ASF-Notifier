@@ -36,7 +36,7 @@ internal readonly record struct NotifyTestDecision(NotifyTestAction Action, int 
 	}
 }
 
-internal sealed class NotifyTestCommand(NotifierSettings settings, INotificationChannel? channel, TimeProvider timeProvider, TimeSpan? sendTimeout) {
+internal sealed class NotifyTestCommand(NotifierSettings settings, INotificationChannel? channel, Clock clock, TimeSpan? sendTimeout) {
 	private static readonly TimeSpan DefaultSendTimeout = TimeSpan.FromSeconds(15);
 
 	private readonly Dictionary<string, DateTimeOffset> LastTestByBot = new(StringComparer.Ordinal);
@@ -44,7 +44,7 @@ internal sealed class NotifyTestCommand(NotifierSettings settings, INotification
 
 	// Returns null when the command is not ours or the caller may not know it exists
 	internal async Task<string?> HandleAsync(string botName, string? commandName, bool isMasterOrHigher, CancellationToken cancellationToken) {
-		DateTimeOffset now = timeProvider.GetUtcNow();
+		DateTimeOffset now = clock.GetUtcNow();
 		string? notConfigured = channel == null ? (settings.NotConfiguredReason ?? "no channel") : null;
 		NotifyTestDecision decision;
 

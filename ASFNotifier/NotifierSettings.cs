@@ -44,7 +44,7 @@ internal sealed class NotifierSettings {
 		string? roomId = null;
 		string? jsonToken = null;
 
-		if (block.TryGetProperty("Matrix", out JsonElement matrix) && (matrix.ValueKind == JsonValueKind.Object)) {
+		if (block.TryGetMember("Matrix", out JsonElement matrix) && (matrix.ValueKind == JsonValueKind.Object)) {
 			homeserver = ReadString(matrix, "HomeserverUrl")?.TrimEnd('/');
 			roomId = ReadString(matrix, "RoomId");
 			jsonToken = ReadString(matrix, "AccessToken");
@@ -126,7 +126,7 @@ internal sealed class NotifierSettings {
 	private static string Append(string? reason, string problem) => reason == null ? problem : $"{reason}; {problem}";
 
 	internal static bool ReadBool(JsonElement parent, string key, bool defaultValue, INotifierLog log) {
-		if (!parent.TryGetProperty(key, out JsonElement value)) {
+		if (!parent.TryGetMember(key, out JsonElement value)) {
 			return defaultValue;
 		}
 
@@ -142,7 +142,7 @@ internal sealed class NotifierSettings {
 	internal static Dictionary<NotificationKind, bool> ReadEvents(JsonElement block, INotifierLog log, bool forBot = false) {
 		Dictionary<NotificationKind, bool> events = [];
 
-		if (!block.TryGetProperty(nameof(Events), out JsonElement map)) {
+		if (!block.TryGetMember(nameof(Events), out JsonElement map)) {
 			return events;
 		}
 
@@ -179,7 +179,7 @@ internal sealed class NotifierSettings {
 	}
 
 	private static int ReadMinutes(JsonElement block, INotifierLog log) {
-		if (!block.TryGetProperty(nameof(DisconnectedNotifyAfterMinutes), out JsonElement value)) {
+		if (!block.TryGetMember(nameof(DisconnectedNotifyAfterMinutes), out JsonElement value)) {
 			return DefaultDisconnectedNotifyAfterMinutes;
 		}
 
@@ -193,7 +193,7 @@ internal sealed class NotifierSettings {
 	}
 
 	private static string? ReadString(JsonElement parent, string key) {
-		if (!parent.TryGetProperty(key, out JsonElement value) || (value.ValueKind != JsonValueKind.String)) {
+		if (!parent.TryGetMember(key, out JsonElement value) || (value.ValueKind != JsonValueKind.String)) {
 			return null;
 		}
 

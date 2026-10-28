@@ -244,7 +244,9 @@ Replies:
 
 ## Building
 
-See `CLAUDE.md` for the build, test and packaging commands.
+See `CLAUDE.md` for the build, test and packaging commands. CI checks the plugin against ASF's trimmed
+OS-specific builds (issue #23). The trim check is necessary but not sufficient: it proves every referenced
+type and member exists, not that the code runs. The smoke test covers only the `!notifytest` happy path on linux-x64.
 
 ## Licence
 

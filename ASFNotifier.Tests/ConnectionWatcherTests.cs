@@ -13,7 +13,7 @@ namespace ASFNotifier.Tests;
 internal sealed class ConnectionWatcherTests {
 	private readonly FakeHost Host = new();
 	private readonly FakeGiveUpLog Tap = new();
-	private readonly FakeTimeProvider Time = new();
+	private readonly FakeClock Time = new();
 	private bool ShuttingDown;
 
 	[TestMethod]
