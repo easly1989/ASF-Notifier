@@ -125,7 +125,7 @@ internal sealed class NotifierSettings {
 
 	private static string Append(string? reason, string problem) => reason == null ? problem : $"{reason}; {problem}";
 
-	private static bool ReadBool(JsonElement parent, string key, bool defaultValue, INotifierLog log) {
+	internal static bool ReadBool(JsonElement parent, string key, bool defaultValue, INotifierLog log) {
 		if (!parent.TryGetProperty(key, out JsonElement value)) {
 			return defaultValue;
 		}
@@ -139,7 +139,7 @@ internal sealed class NotifierSettings {
 		return defaultValue;
 	}
 
-	private static Dictionary<NotificationKind, bool> ReadEvents(JsonElement block, INotifierLog log) {
+	internal static Dictionary<NotificationKind, bool> ReadEvents(JsonElement block, INotifierLog log, bool forBot = false) {
 		Dictionary<NotificationKind, bool> events = [];
 
 		if (!block.TryGetProperty(nameof(Events), out JsonElement map)) {
@@ -153,6 +153,13 @@ internal sealed class NotifierSettings {
 		}
 
 		foreach (JsonProperty property in map.EnumerateObject()) {
+			// ASF-wide: it has no bot, so a bot config cannot decide it
+			if (forBot && (property.Name == nameof(NotificationKind.AsfUpdated))) {
+				log.Warning($"{ConfigKey}.Events.{property.Name} is not a per-bot event, ignoring it");
+
+				continue;
+			}
+
 			if (!ConfigurableKinds.TryGetValue(property.Name, out NotificationKind kind)) {
 				log.Warning($"{ConfigKey}.Events.{property.Name} is not a known event, ignoring it");
 
