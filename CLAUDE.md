@@ -26,7 +26,7 @@ Requires the .NET 10 SDK. Clone with submodules: `git clone --recursive` (or
   then zip the folder's contents (not the folder) as `ASFNotifier.zip` (CI does this; see
   `.github/workflows/publish.yml`).
 - Run: copy the published folder to ASF's `plugins/ASFNotifier/` and restart ASF.
-- Trimmed-ASF check (CI job `trimmed-asf`): unzip an official OS-specific ASF release, then
+- Trimmed-ASF check (`.github/workflows/trimmed-asf.yml`, run by CI and required by the release job): unzip an official OS-specific ASF release, then
   `dotnet run --project tools/TrimCheck -c Release -- <asf-dir> <published>/ASFNotifier.dll` and
   `tools/smoke/smoke.sh <asf-dir> <published-dir>` (bash, needs `curl` and `python3`; set `PYTHON=python` on Windows,
   where a win-x64 release works under Git Bash).

@@ -31,6 +31,14 @@ internal sealed class FilterAndFormatterTests {
 	}
 
 	[TestMethod]
+	internal void FormatterEscapesTheApostrophe() {
+		FormattedMessage message = Formatter.Format(Of(NotificationKind.Test, "o'bot"));
+
+		Assert.AreEqual("🧪 ASF-Notifier test from o'bot — delivery works", message.PlainText);
+		Assert.AreEqual("🧪 <b>ASF-Notifier</b> test from <b>o&#39;bot</b> — delivery works", message.Html);
+	}
+
+	[TestMethod]
 	[DataRow(NotificationKind.BotStoppedByAsf, "TwoFactorCodeMismatch", null, true, "🔴 bot1 — login failed (TwoFactorCodeMismatch), ASF stopped the bot", "🔴 <b>bot1</b> — login failed (<code>TwoFactorCodeMismatch</code>), ASF stopped the bot", DisplayName = "Stopped by ASF, login reason")]
 	[DataRow(NotificationKind.BotStoppedByAsf, null, "TwoFactorAuthentication", false, "🔴 bot1 — ASF stopped the bot, it needs TwoFactorAuthentication input", "🔴 <b>bot1</b> — ASF stopped the bot, it needs <code>TwoFactorAuthentication</code> input", DisplayName = "Stopped by ASF, needs input")]
 	[DataRow(NotificationKind.BotStoppedByAsf, "LogonSessionReplaced", null, false, "🔴 bot1 — ASF stopped the bot (LogonSessionReplaced)", "🔴 <b>bot1</b> — ASF stopped the bot (<code>LogonSessionReplaced</code>)", DisplayName = "Stopped by ASF, other reason")]

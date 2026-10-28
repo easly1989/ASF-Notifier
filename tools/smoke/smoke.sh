@@ -36,6 +36,8 @@ fail() {
 	echo "SMOKE FAIL: $*" >&2
 	echo "----- ASF output -----" >&2
 	cat "$work/asf.out" >&2 2>/dev/null || true
+	echo "----- fake homeserver output -----" >&2
+	cat "$work/fake.out" >&2 2>/dev/null || true
 	exit 1
 }
 
@@ -52,7 +54,7 @@ exe="$work/ArchiSteamFarm"
 [ -f "$exe" ] || fail "no ArchiSteamFarm executable in $asf_src"
 chmod +x "$exe"
 
-mkdir -p "$work/plugins/ASFNotifier"
+mkdir -p "$work/config" "$work/plugins/ASFNotifier"
 cp -R "$plugin_src"/. "$work/plugins/ASFNotifier/"
 
 cat > "$work/config/ASF.json" <<EOF
@@ -95,16 +97,21 @@ echo "Waiting for ASF's IPC on ${ipc}"
 
 for _ in $(seq 1 120); do
 	kill -0 "$asf_pid" 2>/dev/null || fail "ASF exited during start-up"
-	curl -fsS "${ipc}/Api/ASF" > /dev/null 2>&1 && break
+	curl -fsS --max-time 20 "${ipc}/Api/ASF" > /dev/null 2>&1 && break
 	sleep 1
 done
 
-curl -fsS "${ipc}/Api/ASF" > /dev/null || fail "IPC did not come up within 120 s"
+curl -fsS --max-time 20 "${ipc}/Api/ASF" > /dev/null || fail "IPC did not come up within 120 s"
 
 grep -Eq 'ASFNotifier [0-9.]+ loaded' "$work/asf.out" || fail "the plugin did not log that it loaded"
 echo "OK: $(grep -Eo 'ASFNotifier [0-9.]+ loaded' "$work/asf.out" | head -n 1)"
 
-reply=$(curl -fsS -H 'Content-Type: application/json' -d '{"Command":"notifytest"}' "${ipc}/Api/Command") || fail "IPC command failed"
+# The fake answers 404 to anything but a send; any HTTP answer proves it is up
+kill -0 "$fake_pid" 2>/dev/null || fail "the fake homeserver is not running"
+fake_status=$(curl -sS --max-time 20 -o /dev/null -w '%{http_code}' "http://127.0.0.1:${matrix_port}/") || fail "the fake homeserver does not answer"
+[ "$fake_status" = 404 ] || fail "the fake homeserver answered $fake_status"
+
+reply=$(curl -fsS --max-time 20 -H 'Content-Type: application/json' -d '{"Command":"notifytest"}' "${ipc}/Api/Command") || fail "IPC command failed"
 echo "notifytest: $reply"
 case "$reply" in
 	*"Test notification sent to Matrix."*) ;;
@@ -126,7 +133,7 @@ assert "delivery works" in body["formatted_body"], body
 print("OK: fake homeserver got m.notice:", body["body"])
 EOF
 
-curl -fsS -X POST "${ipc}/Api/ASF/Exit" > /dev/null || fail "IPC exit failed"
+curl -fsS --max-time 20 -X POST "${ipc}/Api/ASF/Exit" > /dev/null || fail "IPC exit failed"
 
 for _ in $(seq 1 30); do
 	kill -0 "$asf_pid" 2>/dev/null || break
