@@ -24,8 +24,8 @@ internal static class Formatter {
 			NotificationKind.FarmingStarted => new FormattedMessage($"▶️ {bot} — farming started", $"▶️ {boldBot} — farming started"),
 			NotificationKind.FarmingStopped => new FormattedMessage($"⏸️ {bot} — farming stopped", $"⏸️ {boldBot} — farming stopped"),
 			NotificationKind.AsfUpdated => new FormattedMessage($"⬆️ ASF updated {notification.FromVersion} → {notification.ToVersion}", $"⬆️ ASF updated {Code(notification.FromVersion ?? "")} → {Code(notification.ToVersion ?? "")}"),
-			NotificationKind.Suppressed => new FormattedMessage($"⚠️ ASF-Notifier — {notification.Count} notifications suppressed in the last hour (rate limit)", $"⚠️ <b>ASF-Notifier</b> — {notification.Count} notifications suppressed in the last hour (rate limit)"),
-			NotificationKind.Test =>new FormattedMessage($"🧪 ASF-Notifier test from {bot} — delivery works", $"🧪 <b>ASF-Notifier</b> test from {boldBot} — delivery works"),
+			NotificationKind.Suppressed => new FormattedMessage($"⚠️ ASF-Notifier — {Suppressed(notification.Count)} (rate limit)", $"⚠️ <b>ASF-Notifier</b> — {Suppressed(notification.Count)} (rate limit)"),
+			NotificationKind.Test => new FormattedMessage($"🧪 ASF-Notifier test from {bot} — delivery works", $"🧪 <b>ASF-Notifier</b> test from {boldBot} — delivery works"),
 			_ => throw new NotSupportedException(notification.Kind.ToString())
 		};
 	}
@@ -43,4 +43,6 @@ internal static class Formatter {
 	}
 
 	private static string Code(string value) => $"<code>{WebUtility.HtmlEncode(value)}</code>";
+
+	private static string Suppressed(int? count) => count == 1 ? "1 notification suppressed" : $"{count} notifications suppressed";
 }

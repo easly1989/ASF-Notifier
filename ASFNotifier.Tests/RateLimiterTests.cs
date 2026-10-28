@@ -76,11 +76,77 @@ internal sealed class RateLimiterTests {
 		Assert.IsFalse(Pass(NotificationKind.FarmingFinished, "late"));
 
 		// The first slot frees exactly one hour after it was taken
-		Clock.Now = Start + RateLimiter.CapWindow - TimeSpan.FromSeconds(1);
+		Clock.Advance(Start + RateLimiter.CapWindow - TimeSpan.FromSeconds(1) - Clock.Now);
 		Assert.IsFalse(Pass(NotificationKind.FarmingFinished, "late2"));
 
-		Clock.Now = Start + RateLimiter.CapWindow;
+		Clock.Advance(TimeSpan.FromSeconds(1));
 		Assert.IsTrue(Pass(NotificationKind.FarmingFinished, "late3"));
+	}
+
+	[TestMethod]
+	internal void ABackwardsClockJumpMutesNothing() {
+		Assert.IsTrue(Pass(NotificationKind.BotStoppedByAsf, "bot1"));
+		FillTheHour(19);
+
+		// The wall clock steps back an hour; the windows run on monotonic time
+		Clock.Now -= TimeSpan.FromHours(1);
+		Clock.Advance(RateLimiter.DedupeWindow);
+		Assert.IsTrue(Pass(NotificationKind.BotStoppedByAsf, "bot1"));
+
+		Clock.Advance(RateLimiter.CapWindow);
+		Assert.IsTrue(Pass(NotificationKind.FarmingFinished, "after"));
+	}
+
+	[TestMethod]
+	[DataRow(NotificationKind.BotStopped)]
+	[DataRow(NotificationKind.BotStoppedByAsf)]
+	internal void AStopClosesTheOutage(NotificationKind stop) {
+		Assert.IsTrue(Pass(NotificationKind.BotDisconnected, "bot1"));
+		Clock.Advance(TimeSpan.FromMinutes(1));
+		Assert.IsTrue(Pass(NotificationKind.BotReconnected, "bot1"));
+
+		Clock.Advance(TimeSpan.FromMinutes(9.5));
+		Assert.IsTrue(Pass(NotificationKind.BotDisconnected, "bot1"));
+		Clock.Advance(TimeSpan.FromSeconds(10));
+		Assert.IsTrue(Pass(stop, "bot1"));
+
+		// The stop ended the outage, so this one closes nothing that was sent
+		Clock.Advance(TimeSpan.FromSeconds(5));
+		Assert.IsFalse(Pass(NotificationKind.BotReconnected, "bot1"));
+	}
+
+	[TestMethod]
+	internal void ARefusedSummaryKeepsTheCount() {
+		Assert.IsTrue(Pass(NotificationKind.FarmingFinished, "bot1"));
+		Assert.IsFalse(Pass(NotificationKind.FarmingFinished, "bot1"));
+		Assert.IsFalse(Pass(NotificationKind.FarmingFinished, "bot1"));
+
+		Assert.IsTrue(Limiter.Pass(new Notification(NotificationKind.FarmingFinished, "bot2", Clock.Now), notification => notification.Kind != NotificationKind.Suppressed));
+		Assert.IsTrue(Pass(NotificationKind.FarmingFinished, "bot3"));
+
+		Assert.AreEqual(2, Queued.Single(static notification => notification.Kind == NotificationKind.Suppressed).Count);
+	}
+
+	[TestMethod]
+	internal void ARefusedMessageLeavesNoTrace() {
+		Assert.IsFalse(Limiter.Pass(new Notification(NotificationKind.FarmingFinished, "bot1", Clock.Now), static _ => false));
+
+		// Neither deduped nor counted as suppressed
+		Assert.IsTrue(Pass(NotificationKind.FarmingFinished, "bot1"));
+		Assert.AreEqual(NotificationKind.FarmingFinished, Queued.Single().Kind);
+	}
+
+	[TestMethod]
+	internal void ARefusedDisconnectOpensNoOutage() {
+		Assert.IsTrue(Pass(NotificationKind.BotDisconnected, "bot1"));
+		Clock.Advance(TimeSpan.FromMinutes(1));
+		Assert.IsTrue(Pass(NotificationKind.BotReconnected, "bot1"));
+
+		Clock.Advance(TimeSpan.FromMinutes(9.5));
+		Assert.IsFalse(Limiter.Pass(new Notification(NotificationKind.BotDisconnected, "bot1", Clock.Now), static _ => false));
+
+		Clock.Advance(TimeSpan.FromSeconds(15));
+		Assert.IsFalse(Pass(NotificationKind.BotReconnected, "bot1"));
 	}
 
 	[TestMethod]

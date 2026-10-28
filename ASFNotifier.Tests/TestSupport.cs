@@ -49,7 +49,13 @@ internal sealed class FakeTimeProvider : TimeProvider {
 	}
 
 	internal int CreatedTimers { get; private set; }
+
+	// Wall clock: setting it is a clock jump and leaves the monotonic timestamp alone; Advance moves both
 	internal DateTimeOffset Now { get; set; } = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+
+	public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+
+	private long Elapsed;
 
 	public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period) {
 		FakeTimer timer = new(this, callback, state);
@@ -64,6 +70,8 @@ internal sealed class FakeTimeProvider : TimeProvider {
 		return timer;
 	}
 
+	public override long GetTimestamp() => Elapsed;
+
 	public override DateTimeOffset GetUtcNow() => Now;
 
 	// Moves the clock, firing each timer that falls due on the way at its due time, on the calling thread
@@ -71,11 +79,16 @@ internal sealed class FakeTimeProvider : TimeProvider {
 		DateTimeOffset end = Now + span;
 
 		while (NextDue(end) is { Due: { } due } next) {
-			Now = due;
+			MoveTo(due);
 			next.Fire();
 		}
 
-		Now = end;
+		MoveTo(end);
+	}
+
+	private void MoveTo(DateTimeOffset time) {
+		Elapsed += Math.Max(0, (time - Now).Ticks);
+		Now = time;
 	}
 
 	private FakeTimer? NextDue(DateTimeOffset end) {

@@ -93,11 +93,13 @@ internal sealed class FilterAndFormatterTests {
 	}
 
 	[TestMethod]
-	internal void FormatterSuppressedRow() {
-		FormattedMessage message = Formatter.Format(new Notification(NotificationKind.Suppressed, null, DateTimeOffset.UnixEpoch, Count: 7));
+	[DataRow(7, "⚠️ ASF-Notifier — 7 notifications suppressed (rate limit)", "⚠️ <b>ASF-Notifier</b> — 7 notifications suppressed (rate limit)")]
+	[DataRow(1, "⚠️ ASF-Notifier — 1 notification suppressed (rate limit)", "⚠️ <b>ASF-Notifier</b> — 1 notification suppressed (rate limit)", DisplayName = "Singular")]
+	internal void FormatterSuppressedRow(int count, string plain, string html) {
+		FormattedMessage message = Formatter.Format(new Notification(NotificationKind.Suppressed, null, DateTimeOffset.UnixEpoch, Count: count));
 
-		Assert.AreEqual("⚠️ ASF-Notifier — 7 notifications suppressed in the last hour (rate limit)", message.PlainText);
-		Assert.AreEqual("⚠️ <b>ASF-Notifier</b> — 7 notifications suppressed in the last hour (rate limit)", message.Html);
+		Assert.AreEqual(plain, message.PlainText);
+		Assert.AreEqual(html, message.Html);
 	}
 
 	[TestMethod]

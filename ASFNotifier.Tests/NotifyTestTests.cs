@@ -2,6 +2,7 @@ using System;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using ArchiSteamFarm.Steam;
@@ -74,6 +75,26 @@ internal sealed class NotifyTestTests {
 		(FormattedMessage message, bool bypass) = channel.Calls.Single();
 		Assert.IsTrue(bypass);
 		Assert.AreEqual("🧪 ASF-Notifier test from bot1 — delivery works", message.PlainText);
+	}
+
+	// Test never reaches the rate limiter: the command holds neither the limiter nor the queue, and sends with the cap full
+	[TestMethod]
+	internal async Task SendsWithTheRateLimiterFull() {
+		Type[] held = typeof(NotifyTestCommand).GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic).Select(static field => field.FieldType).ToArray();
+		CollectionAssert.DoesNotContain(held, typeof(RateLimiter));
+		CollectionAssert.DoesNotContain(held, typeof(SendQueue));
+
+		(NotifyTestCommand command, FakeChannel channel, FakeTimeProvider time) = Create();
+		RateLimiter limiter = new(time);
+
+		for (int i = 0; i <= RateLimiter.HourlyCap; i++) {
+			limiter.Pass(new Notification(NotificationKind.FarmingFinished, $"bot{i}", time.Now), static _ => true);
+		}
+
+		Assert.IsFalse(limiter.Pass(new Notification(NotificationKind.FarmingFinished, "full", time.Now), static _ => true));
+
+		Assert.AreEqual("<bot1> Test notification sent to Matrix.", await command.HandleAsync("bot1", "notifytest", true, CancellationToken.None).ConfigureAwait(false));
+		Assert.AreEqual(1, channel.Calls.Count);
 	}
 
 	[TestMethod]
