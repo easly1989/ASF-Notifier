@@ -133,7 +133,7 @@ Docker Compose, with the token in the stack's `.env` file (kept out of version c
 ```yaml
 services:
   asf:
-    image: justarchinet/archisteamfarm:released
+    image: justarchi/archisteamfarm:released
     environment:
       - ASF_NOTIFIER_MATRIX_ACCESS_TOKEN=${ASF_NOTIFIER_MATRIX_ACCESS_TOKEN}
     volumes:
