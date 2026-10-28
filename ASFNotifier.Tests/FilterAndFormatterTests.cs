@@ -93,6 +93,16 @@ internal sealed class FilterAndFormatterTests {
 	}
 
 	[TestMethod]
+	[DataRow(7, "⚠️ ASF-Notifier — 7 notifications suppressed (rate limit)", "⚠️ <b>ASF-Notifier</b> — 7 notifications suppressed (rate limit)")]
+	[DataRow(1, "⚠️ ASF-Notifier — 1 notification suppressed (rate limit)", "⚠️ <b>ASF-Notifier</b> — 1 notification suppressed (rate limit)", DisplayName = "Singular")]
+	internal void FormatterSuppressedRow(int count, string plain, string html) {
+		FormattedMessage message = Formatter.Format(new Notification(NotificationKind.Suppressed, null, DateTimeOffset.UnixEpoch, Count: count));
+
+		Assert.AreEqual(plain, message.PlainText);
+		Assert.AreEqual(html, message.Html);
+	}
+
+	[TestMethod]
 	internal void GlobalDisabledDropsEverything() {
 		NotifierSettings disabled = TestData.Settings("""{"ASFNotifier": {"Enabled": false}}""");
 
