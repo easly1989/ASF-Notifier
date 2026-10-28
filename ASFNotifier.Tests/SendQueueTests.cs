@@ -29,7 +29,7 @@ internal sealed class SendQueueTests {
 		RecordingDelay delay = new();
 		FakeLog log = new();
 
-		using SendQueue queue = new(channel, log, new FakeTimeProvider(), delay.Wait);
+		using SendQueue queue = new(channel, log, new FakeClock(), delay.Wait);
 
 		queue.Enqueue(Note("a"));
 		queue.Enqueue(Note("b"));
@@ -50,7 +50,7 @@ internal sealed class SendQueueTests {
 
 			return SendResult.Sent();
 		});
-		FakeTimeProvider time = new();
+		FakeClock time = new();
 		FakeLog log = new();
 
 		using SendQueue queue = new(channel, log, time, new RecordingDelay().Wait);
@@ -91,7 +91,7 @@ internal sealed class SendQueueTests {
 		ScriptedChannel channel = new(_ => ++call == 1 ? throw new InvalidOperationException($"boom {TestData.Token}") : Task.FromResult(SendResult.Sent()));
 		FakeLog log = new();
 
-		using SendQueue queue = new(channel, log, new FakeTimeProvider(), new RecordingDelay().Wait);
+		using SendQueue queue = new(channel, log, new FakeClock(), new RecordingDelay().Wait);
 
 		// An undefined kind makes the formatter throw; the channel throws on the first real send
 		queue.Enqueue(new Notification((NotificationKind) 200, "bot1", DateTimeOffset.UnixEpoch));
@@ -112,7 +112,7 @@ internal sealed class SendQueueTests {
 		ScriptedChannel channel = new(_ => Task.FromResult(outcomes[call++]));
 		RecordingDelay delay = new();
 
-		using SendQueue queue = new(channel, new FakeLog(), new FakeTimeProvider(), delay.Wait);
+		using SendQueue queue = new(channel, new FakeLog(), new FakeClock(), delay.Wait);
 
 		for (int i = 0; i < 3; i++) {
 			queue.Enqueue(Note($"n{i}"));
@@ -131,7 +131,7 @@ internal sealed class SendQueueTests {
 		ScriptedChannel channel = new(_ => Task.FromResult(SendResult.Sent()));
 		FakeLog log = new();
 
-		using SendQueue queue = new(channel, log, new FakeTimeProvider());
+		using SendQueue queue = new(channel, log, new FakeClock());
 
 		Stopwatch watch = Stopwatch.StartNew();
 		queue.Flush();
@@ -151,7 +151,7 @@ internal sealed class SendQueueTests {
 		RecordingDelay delay = new();
 		FakeLog log = new();
 
-		using SendQueue queue = new(channel, log, new FakeTimeProvider(), delay.Wait);
+		using SendQueue queue = new(channel, log, new FakeClock(), delay.Wait);
 
 		queue.Enqueue(Note("a"));
 		queue.Enqueue(Note("b"));
@@ -182,7 +182,7 @@ internal sealed class SendQueueTests {
 		});
 		FakeLog log = new();
 
-		using SendQueue queue = new(channel, log, new FakeTimeProvider(), new RecordingDelay().Wait, TimeSpan.FromMilliseconds(50));
+		using SendQueue queue = new(channel, log, new FakeClock(), new RecordingDelay().Wait, TimeSpan.FromMilliseconds(50));
 
 		queue.Enqueue(Note("a"));
 		queue.Enqueue(Note("b"));
@@ -207,7 +207,7 @@ internal sealed class SendQueueTests {
 		RecordingDelay delay = new() { Block = true };
 		FakeLog log = new();
 
-		using SendQueue queue = new(channel, log, new FakeTimeProvider(), delay.Wait);
+		using SendQueue queue = new(channel, log, new FakeClock(), delay.Wait);
 
 		queue.Enqueue(Note("a"));
 		channel.WaitForCalls(1);
@@ -226,7 +226,7 @@ internal sealed class SendQueueTests {
 		ScriptedChannel channel = new(_ => Task.FromResult(outcomes[call++]));
 		FakeLog log = new();
 
-		using SendQueue queue = new(channel, log, new FakeTimeProvider(), new RecordingDelay().Wait);
+		using SendQueue queue = new(channel, log, new FakeClock(), new RecordingDelay().Wait);
 
 		queue.Enqueue(Note("a"));
 		queue.Enqueue(Note("b"));
@@ -242,7 +242,7 @@ internal sealed class SendQueueTests {
 	internal void QueueKeepsFifoOrderAndPassesNoBypass() {
 		ScriptedChannel channel = new(_ => Task.FromResult(SendResult.Sent()));
 
-		using SendQueue queue = new(channel, new FakeLog(), new FakeTimeProvider());
+		using SendQueue queue = new(channel, new FakeLog(), new FakeClock());
 
 		string[] names = Enumerable.Range(0, 20).Select(static i => $"n{i}").ToArray();
 
@@ -264,7 +264,7 @@ internal sealed class SendQueueTests {
 		ScriptedChannel channel = new(_ => Task.FromResult(outcomes[call++]));
 		RecordingDelay delay = new();
 
-		using SendQueue queue = new(channel, new FakeLog(), new FakeTimeProvider(), delay.Wait);
+		using SendQueue queue = new(channel, new FakeLog(), new FakeClock(), delay.Wait);
 
 		queue.Enqueue(Note("a"));
 		channel.WaitForCalls(4);
@@ -280,7 +280,7 @@ internal sealed class SendQueueTests {
 		ScriptedChannel channel = new(_ => Task.FromResult(++call <= 11 ? SendResult.Transient("500") : SendResult.Sent()));
 		RecordingDelay delay = new();
 
-		using SendQueue queue = new(channel, new FakeLog(), new FakeTimeProvider(), delay.Wait);
+		using SendQueue queue = new(channel, new FakeLog(), new FakeClock(), delay.Wait);
 
 		queue.Enqueue(Note("a"));
 		queue.Enqueue(Note("b"));
@@ -304,7 +304,7 @@ internal sealed class SendQueueTests {
 		ScriptedChannel channel = new(_ => Task.FromResult(SendResult.Sent()));
 		ThrowingLog log = new();
 
-		using SendQueue queue = new(channel, log, new FakeTimeProvider(), new RecordingDelay().Wait);
+		using SendQueue queue = new(channel, log, new FakeClock(), new RecordingDelay().Wait);
 
 		// Overflow with a logger that throws on every call
 		TaskCompletionSource gate = new();
@@ -313,7 +313,7 @@ internal sealed class SendQueueTests {
 
 			return SendResult.Sent();
 		});
-		FakeTimeProvider time = new();
+		FakeClock time = new();
 
 		using SendQueue overflow = new(blocked, log, time, new RecordingDelay().Wait);
 
@@ -350,7 +350,7 @@ internal sealed class SendQueueTests {
 		ScriptedChannel channel = new(_ => Task.FromResult(outcomes[call++]));
 		RecordingDelay delay = new();
 
-		using SendQueue queue = new(channel, new FakeLog(), new FakeTimeProvider(), delay.Wait);
+		using SendQueue queue = new(channel, new FakeLog(), new FakeClock(), delay.Wait);
 
 		queue.Enqueue(Note("a"));
 		channel.WaitForCalls(2);
@@ -366,7 +366,7 @@ internal sealed class SendQueueTests {
 		ScriptedChannel channel = new(_ => Task.FromResult(outcomes[call++]));
 		FakeLog log = new();
 
-		using SendQueue queue = new(channel, log, new FakeTimeProvider(), new RecordingDelay().Wait);
+		using SendQueue queue = new(channel, log, new FakeClock(), new RecordingDelay().Wait);
 
 		queue.Enqueue(Note("a"));
 		channel.WaitForCalls(2);
@@ -389,7 +389,7 @@ internal sealed class SendQueueTests {
 			return SendResult.Sent();
 		});
 
-		using SendQueue queue = new(channel, new FakeLog(), new FakeTimeProvider(), new RecordingDelay().Wait, budget);
+		using SendQueue queue = new(channel, new FakeLog(), new FakeClock(), new RecordingDelay().Wait, budget);
 
 		queue.Enqueue(Note("a"));
 		channel.WaitForCalls(1);

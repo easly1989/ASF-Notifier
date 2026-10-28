@@ -16,7 +16,7 @@ internal sealed class GiveUpLogTapTests {
 	[TestMethod]
 	internal void KeepsTheLatestGiveUpErrorPerBot() {
 		using LogFactory factory = Factory();
-		FakeTimeProvider time = new();
+		FakeClock time = new();
 		Logger bot1 = factory.GetLogger("bot1");
 
 		using GiveUpLogTap tap = new(factory, time);
@@ -39,7 +39,7 @@ internal sealed class GiveUpLogTapTests {
 		using LogFactory factory = Factory();
 		Logger bot1 = factory.GetLogger("bot1");
 
-		using GiveUpLogTap tap = new(factory, new FakeTimeProvider());
+		using GiveUpLogTap tap = new(factory, new FakeClock());
 
 		// Errors from other methods, warnings and infos from give-up methods, an exception line, the ASF logger
 		bot1.Error("OnFarmingFinished() Unable to login to Steam: InvalidPassword/Invalid");
@@ -58,7 +58,7 @@ internal sealed class GiveUpLogTapTests {
 	[TestMethod]
 	internal void ReasonEntryKeepsTheLatestOneThatNamesAResult() {
 		using LogFactory factory = Factory();
-		FakeTimeProvider time = new();
+		FakeClock time = new();
 		Logger bot1 = factory.GetLogger("bot1");
 
 		using GiveUpLogTap tap = new(factory, time);
@@ -86,7 +86,7 @@ internal sealed class GiveUpLogTapTests {
 	[TestMethod]
 	internal void SurvivesAConfigurationReload() {
 		using LogFactory factory = Factory();
-		FakeTimeProvider time = new();
+		FakeClock time = new();
 		Logger bot1 = factory.GetLogger("bot1");
 		List<Action> deferred = [];
 
@@ -129,7 +129,7 @@ internal sealed class GiveUpLogTapTests {
 
 		using LogFactory factory = new() { Configuration = configuration };
 
-		using GiveUpLogTap tap = new(factory, new FakeTimeProvider());
+		using GiveUpLogTap tap = new(factory, new FakeClock());
 
 		factory.GetLogger("bot1").Error("OnConnected() SteamLogin is invalid!");
 
@@ -141,7 +141,7 @@ internal sealed class GiveUpLogTapTests {
 		using LogFactory factory = Factory();
 		Logger bot1 = factory.GetLogger("bot1");
 		List<Action> deferred = [];
-		GiveUpLogTap tap = new(factory, new FakeTimeProvider(), deferred.Add);
+		GiveUpLogTap tap = new(factory, new FakeClock(), deferred.Add);
 
 		bot1.Error("OnConnected() SteamLogin is invalid!");
 		tap.Forget("bot1");

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Frozen;
 using System.Collections.Generic;
 using System.Threading;
+using System.Threading.Tasks;
 using NLog;
 using NLog.Config;
 using NLog.Targets;
@@ -32,18 +33,19 @@ internal sealed class GiveUpLogTap : IDisposable, IGiveUpLog {
 	// Taken only outside NLog's own lock, and always before it: NLog raises ConfigurationChanged while holding it
 	private readonly Lock RegistrationLock = new();
 
-	private readonly TimeProvider TimeProvider;
+	private readonly Clock Clock;
 
 	private TapTarget? CurrentTarget;
 	private bool Disposed;
 
 	// defer is a test seam; production hands the re-registration to the thread pool
-	internal GiveUpLogTap(LogFactory factory, TimeProvider timeProvider, Action<Action>? defer = null) {
+	internal GiveUpLogTap(LogFactory factory, Clock clock, Action<Action>? defer = null) {
 		ArgumentNullException.ThrowIfNull(factory);
 
 		Factory = factory;
-		TimeProvider = timeProvider;
-		Defer = defer ?? (static work => ThreadPool.QueueUserWorkItem(static state => state(), work, false));
+		Clock = clock;
+		// Task.Run, not ThreadPool: the trimmed ASF has no System.Threading.ThreadPool facade (issue #23)
+		Defer = defer ?? (static work => Task.Run(work));
 
 		// ASF or the user can replace the NLog configuration at runtime; the tap follows it
 		Factory.ConfigurationChanged += OnConfigurationChanged;
@@ -107,7 +109,7 @@ internal sealed class GiveUpLogTap : IDisposable, IGiveUpLog {
 		}
 
 		EResult? reason = StopClassifier.ParseReason(message[(end + 3)..]);
-		TapEntry entry = new(TimeProvider.GetUtcNow(), method, reason);
+		TapEntry entry = new(Clock.GetUtcNow(), method, reason);
 
 		lock (Lock) {
 			if (Disposed) {

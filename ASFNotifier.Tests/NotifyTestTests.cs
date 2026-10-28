@@ -15,8 +15,8 @@ namespace ASFNotifier.Tests;
 internal sealed class NotifyTestTests {
 	private static readonly DateTimeOffset Now = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
 
-	private static (NotifyTestCommand Command, FakeChannel Channel, FakeTimeProvider Time) Create(SendResult? result = null, string? configJson = null, TimeSpan? timeout = null) {
-		FakeTimeProvider time = new();
+	private static (NotifyTestCommand Command, FakeChannel Channel, FakeClock Time) Create(SendResult? result = null, string? configJson = null, TimeSpan? timeout = null) {
+		FakeClock time = new();
 		FakeChannel channel = new(_ => Task.FromResult(result ?? SendResult.Sent()));
 		NotifierSettings settings = TestData.Settings(configJson ?? TestData.ConfigJson(), TestData.Token);
 
@@ -84,7 +84,7 @@ internal sealed class NotifyTestTests {
 		CollectionAssert.DoesNotContain(held, typeof(RateLimiter));
 		CollectionAssert.DoesNotContain(held, typeof(SendQueue));
 
-		(NotifyTestCommand command, FakeChannel channel, FakeTimeProvider time) = Create();
+		(NotifyTestCommand command, FakeChannel channel, FakeClock time) = Create();
 		RateLimiter limiter = new(time);
 
 		for (int i = 0; i <= RateLimiter.HourlyCap; i++) {
@@ -108,7 +108,7 @@ internal sealed class NotifyTestTests {
 
 	[TestMethod]
 	internal async Task CooldownIsPerBotAndExpires() {
-		(NotifyTestCommand command, FakeChannel channel, FakeTimeProvider time) = Create();
+		(NotifyTestCommand command, FakeChannel channel, FakeClock time) = Create();
 
 		await command.HandleAsync("bot1", "notifytest", true, CancellationToken.None).ConfigureAwait(false);
 		time.Advance(TimeSpan.FromSeconds(3));
@@ -156,7 +156,7 @@ internal sealed class NotifyTestTests {
 
 	[TestMethod]
 	internal async Task HangingChannelRepliesTimeout() {
-		FakeTimeProvider time = new();
+		FakeClock time = new();
 		NotifierSettings settings = TestData.Settings(TestData.ConfigJson(), TestData.Token);
 		FakeChannel hang = new(async ct => {
 			await Task.Delay(Timeout.Infinite, ct).ConfigureAwait(false);
@@ -175,7 +175,7 @@ internal sealed class NotifyTestTests {
 		using FakeHandler handler = new();
 		using HttpClient client = MatrixChannel.CreateHttpClient(handler);
 		FakeLog log = new();
-		FakeTimeProvider time = new();
+		FakeClock time = new();
 		MatrixChannel real = new(client, TestData.Homeserver, TestData.RoomId, TestData.Token, time, log);
 		NotifierSettings settings = TestData.Settings(TestData.ConfigJson(), TestData.Token);
 		NotifyTestCommand command = new(settings, real, time, null);

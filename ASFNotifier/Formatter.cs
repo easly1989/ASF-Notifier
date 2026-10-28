@@ -1,5 +1,5 @@
 using System;
-using System.Net;
+using System.Text;
 
 namespace ASFNotifier;
 
@@ -8,7 +8,7 @@ internal static class Formatter {
 		ArgumentNullException.ThrowIfNull(notification);
 
 		string bot = notification.BotName ?? "";
-		string boldBot = $"<b>{WebUtility.HtmlEncode(bot)}</b>";
+		string boldBot = $"<b>{Html(bot)}</b>";
 
 		// The other kinds arrive with their event tickets
 		return notification.Kind switch {
@@ -33,7 +33,9 @@ internal static class Formatter {
 	// Spec section 8: whole minutes below 2 hours, then hours and minutes. Rounded, so a timer firing a few milliseconds
 	// early still reads as the configured threshold
 	internal static string Duration(TimeSpan? duration) {
-		long minutes = (long) Math.Round((duration ?? TimeSpan.Zero).TotalMinutes, MidpointRounding.AwayFromZero);
+		// Half away from zero, by hand: the trimmed ASF has no MidpointRounding (issue #23)
+		double total = (duration ?? TimeSpan.Zero).TotalMinutes;
+		long minutes = (long) (total < 0 ? -Math.Floor(-total + 0.5) : Math.Floor(total + 0.5));
 
 		return minutes switch {
 			1 => "1 minute",
@@ -42,7 +44,31 @@ internal static class Formatter {
 		};
 	}
 
-	private static string Code(string value) => $"<code>{WebUtility.HtmlEncode(value)}</code>";
+	private static string Code(string value) => $"<code>{Html(value)}</code>";
+
+	// The trimmed ASF has no WebUtility (issue #23). Escapes what HTML needs; other characters pass through as they are
+	private static string Html(string value) {
+		StringBuilder html = new(value.Length);
+
+		foreach (char c in value) {
+			string? entity = c switch {
+				'&' => "&amp;",
+				'<' => "&lt;",
+				'>' => "&gt;",
+				'"' => "&quot;",
+				'\'' => "&#39;",
+				_ => null
+			};
+
+			if (entity == null) {
+				html.Append(c);
+			} else {
+				html.Append(entity);
+			}
+		}
+
+		return html.ToString();
+	}
 
 	private static string Suppressed(int? count) => count == 1 ? "1 notification suppressed" : $"{count} notifications suppressed";
 }

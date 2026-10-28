@@ -18,7 +18,16 @@ internal sealed class StopHold {
 	internal DateTimeOffset? NextDue {
 		get {
 			lock (Lock) {
-				return Held.Count > 0 ? Held.Min(static notification => notification.OccurredAt) + HoldTime : null;
+				DateTimeOffset? earliest = null;
+
+				// A loop, not Enumerable.Min: the trimmed ASF lacks that overload (issue #23)
+				foreach (Notification notification in Held) {
+					if ((earliest == null) || (notification.OccurredAt < earliest)) {
+						earliest = notification.OccurredAt;
+					}
+				}
+
+				return earliest + HoldTime;
 			}
 		}
 	}
