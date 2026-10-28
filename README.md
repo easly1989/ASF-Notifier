@@ -76,7 +76,7 @@ Everything below explains each step and the options.
 
 - ArchiSteamFarm, built and tested against 6.3.10.6. The OS-specific builds and the Docker image
   include the .NET 10 runtime, so there is nothing else to install; the `generic` build needs the
-  .NET 10 runtime installed, as ASF itself does.
+  ASP.NET Core 10 runtime installed, as ASF itself does.
 - A Matrix homeserver, a dedicated bot user and an unencrypted room (see [Matrix setup](#matrix-setup)).
 
 ## Install
@@ -208,8 +208,7 @@ services:
 > **Warning: IPC exposure.** ASF's IPC returns every `ASF.json` key, including unknown ones.
 > A token placed in `ASF.json` is served verbatim by `GET /Api/ASF` and shown in ASF-ui to anyone
 > who can reach IPC: without an `IPCPassword`, that is any local process (loopback is always allowed)
-> plus every address in `KnownNetworks`. If the
-> token comes from `ASF.json` the plugin logs a warning at start. If you move it to the environment,
+> plus every address in `KnownNetworks`. If the token comes from `ASF.json` the plugin logs a warning at start. If you move it to the environment,
 > delete it from `ASF.json`: it is then ignored but still served.
 
 ## Check that it works
@@ -277,8 +276,9 @@ parentheses is left out when it is unknown.
   The only bot of a single-bot instance is still reported.
 - **Dedupe.** The same event for the same bot is sent at most once every 10 minutes; repeats are
   counted as suppressed. A `BotReconnected` that closes a sent `BotDisconnected` is never deduped.
-- **Hourly cap.** At most 20 capped messages in any rolling 60 minutes. `BotStoppedByAsf` and
-  `BotReconnected` are exempt from the cap, and so is the summary. When something passes after
+- **Hourly cap.** 20 slots in any rolling 60 minutes. `BotStoppedByAsf`, `BotReconnected` and the
+  summary use a slot when one is free but are never blocked; every other event is dropped while all
+  slots are taken. When something passes after
   drops (cap or dedupe), one `N notifications suppressed (rate limit)` message is sent just before
   it; if nothing else ever passes, the summary is never sent.
 - **A short outage is silent.** A bot that reconnects within `DisconnectedNotifyAfterMinutes`
@@ -497,7 +497,7 @@ the channel as `Stable!` forces a re-install even when the version is not newer.
 ### Hold or pin a version
 
 ASF has no setting for "stay on version X" and always updates to the latest release. To stay on a
-version, keep `ASFNotifier` out of the update list (or turn updates off as above) and install the
+version, turn its updates off ([above](#turn-automatic-updates-off)) and install the
 zip of that release by hand. An update never goes backwards: the installed version is replaced only
 by a newer one.
 
