@@ -387,6 +387,10 @@ the stored one (`ASF.GlobalDatabase.LoadFromJsonStorage("ASFNotifier.LastAsfVers
   current version, emit nothing.
 - stored < current → emit `AsfUpdated(From, To)`, then store the current version.
 - equal → nothing. Stored > current (a downgrade) → log a line, store, emit nothing.
+- a stored value that is not a JSON string counts as unparsable; a missing trailing part
+  (`6.3.10`) equals `.0` (`6.3.10.0`). The message has no bot name; it goes through the
+  same `Emit` as every other event, so `Events.AsfUpdated: false` disables it (the version is
+  still stored).
 
 This works for every variant, including Docker, where ASF updates by replacing the image.
 `IUpdateAware` is not implemented: it never fires in Docker and would duplicate the startup
