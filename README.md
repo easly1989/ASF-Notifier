@@ -1,5 +1,19 @@
 # ASF-Notifier
 
+<p align="center">
+  <a href="https://easly1989.github.io/"><img src="https://img.shields.io/badge/Website-easly1989.github.io-2457D6" alt="Website" /></a>
+  <a href="https://github.com/easly1989/ASF-Notifier/releases/latest"><img src="https://img.shields.io/github/v/release/easly1989/ASF-Notifier" alt="Latest release" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License: Apache 2.0" /></a>
+</p>
+
+<p align="center">
+  <a href="https://buymeacoffee.com/easly1989"><img src="https://img.shields.io/badge/Buy%20me%20a%20coffee-FFDD00?logo=buymeacoffee&logoColor=black" alt="Buy me a coffee" /></a>
+  <a href="https://paypal.me/carloruggiero"><img src="https://img.shields.io/badge/Donate-PayPal-00457C?logo=paypal&logoColor=white" alt="Donate via PayPal" /></a>
+  <a href="https://buy.stripe.com/8x26oAeqA7h6dPk80hfbq00"><img src="https://img.shields.io/badge/Donate-Stripe-635BFF?logo=stripe&logoColor=white" alt="Donate via Stripe" /></a>
+  <a href="https://liberapay.com/amon2126/donate"><img src="https://img.shields.io/badge/Donate-Liberapay-F6C915?logo=liberapay&logoColor=black" alt="Donate via Liberapay" /></a>
+  <a href="https://github.com/sponsors/easly1989"><img src="https://img.shields.io/badge/Sponsor-GitHub-EA4AAA?logo=githubsponsors&logoColor=white" alt="Sponsor on GitHub" /></a>
+</p>
+
 An [ArchiSteamFarm](https://github.com/JustArchiNET/ArchiSteamFarm) (ASF) plugin that sends
 notifications to a [Matrix](https://matrix.org) room: a bot stopped, a bot stayed disconnected,
 farming finished, ASF was updated. Each event can be switched on or off globally and per bot,
@@ -25,6 +39,7 @@ using ASF's own config files.
 - [Updates](#updates)
 - [Troubleshooting](#troubleshooting)
 - [Building](#building)
+- [Support the project](#support-the-project)
 - [Licence](#licence)
 
 ## Quick start
@@ -48,7 +63,7 @@ using ASF's own config files.
 
 4. Put the token in the environment of the ASF process (not in `ASF.json`):
 
-   ```
+   ```sh
    ASF_NOTIFIER_MATRIX_ACCESS_TOKEN=<token>
    ```
 
@@ -59,8 +74,9 @@ Everything below explains each step and the options.
 
 ## Requirements
 
-- ArchiSteamFarm 6.3.10.6 or newer. The plugin is built against 6.3.10.6; the .NET 10 runtime is
-  the one ASF ships with, so there is nothing else to install.
+- ArchiSteamFarm, built and tested against 6.3.10.6. The OS-specific builds and the Docker image
+  include the .NET 10 runtime, so there is nothing else to install; the `generic` build needs the
+  ASP.NET Core 10 runtime installed, as ASF itself does.
 - A Matrix homeserver, a dedicated bot user and an unencrypted room (see [Matrix setup](#matrix-setup)).
 
 ## Install
@@ -168,7 +184,7 @@ Optional. A bot without this block inherits the global settings.
 
 Set the token in the environment, not in `ASF.json`:
 
-```
+```sh
 ASF_NOTIFIER_MATRIX_ACCESS_TOKEN=<token>
 ```
 
@@ -191,8 +207,8 @@ services:
 
 > **Warning: IPC exposure.** ASF's IPC returns every `ASF.json` key, including unknown ones.
 > A token placed in `ASF.json` is served verbatim by `GET /Api/ASF` and shown in ASF-ui to anyone
-> who can reach IPC, and without an `IPCPassword` that is every address in `KnownNetworks`. If the
-> token comes from `ASF.json` the plugin logs a warning at start. If you move it to the environment,
+> who can reach IPC: without an `IPCPassword`, that is any local process (loopback is always allowed)
+> plus every address in `KnownNetworks`. If the token comes from `ASF.json` the plugin logs a warning at start. If you move it to the environment,
 > delete it from `ASF.json`: it is then ignored but still served.
 
 ## Check that it works
@@ -205,7 +221,8 @@ services:
 
    - Send `!notifytest` to a bot (with ASF's `CommandPrefix`, `!` by default), or `notifytest` in the
      ASF console or IPC command box.
-   - Needs **Master** access or higher. Lower access gets ASF's usual unknown-command answer.
+   - Needs **Master** access or higher. Lower access gets ASF's usual answer for a command it
+     may not run: `Unknown command` for Operator, `Access denied` for FamilySharing, nothing below.
    - 10 second cooldown per bot: `<bot1> Please wait 7 s before the next test.`
    - Bypasses the event filter, rate limit and degraded state, and waits up to 15 s for the answer.
 
@@ -219,7 +236,7 @@ services:
 
 | Event (config key) | Sent when | Default |
 |---|---|---|
-| `BotStoppedByAsf` | ASF stopped the bot: login failed, or it needs input (2FA code, password) | on |
+| `BotStoppedByAsf` | ASF gave up on the bot and stopped it: login failed, it needs input (2FA code, password), or another ASF error | on |
 | `BotDisconnected` | A bot is still disconnected after `DisconnectedNotifyAfterMinutes` | on |
 | `BotReconnected` | A bot logs on again after a `BotDisconnected` was sent | on |
 | `FarmingFinished` | Farming finished and something was farmed | on |
@@ -259,10 +276,11 @@ parentheses is left out when it is unknown.
   The only bot of a single-bot instance is still reported.
 - **Dedupe.** The same event for the same bot is sent at most once every 10 minutes; repeats are
   counted as suppressed. A `BotReconnected` that closes a sent `BotDisconnected` is never deduped.
-- **Hourly cap.** At most 20 messages in any rolling 60 minutes. `BotStoppedByAsf` and
-  `BotReconnected` are exempt from the cap. When something passes after drops, one
-  `N notifications suppressed (rate limit)` message is sent just before it; if nothing else ever
-  passes, the summary is never sent.
+- **Hourly cap.** 20 slots in any rolling 60 minutes. `BotStoppedByAsf`, `BotReconnected` and the
+  summary use a slot when one is free but are never blocked; every other event is dropped while all
+  slots are taken. When something passes after
+  drops (cap or dedupe), one `N notifications suppressed (rate limit)` message is sent just before
+  it; if nothing else ever passes, the summary is never sent.
 - **A short outage is silent.** A bot that reconnects within `DisconnectedNotifyAfterMinutes`
   produces no message.
 - **`AsfUpdated` is detected at startup**, by comparing the running ASF version with the one the
@@ -349,7 +367,7 @@ Notes:
 - The plugin sends `m.notice` messages with an HTML body. Some bridges treat notices differently from
   ordinary messages (for example, skip them or bridge them as plain text), and the HTML formatting may
   be reduced to plain text on the other side. Check your bridge's settings if nothing arrives.
-- The bridge needs the room to stay **unencrypted**, as the plugin does.
+- The room must stay **unencrypted** even when bridged, because the plugin cannot encrypt.
 - Keep the same bot user and token for the plugin; the bridge does not need the token.
 
 ### 2. Read the room in any Matrix client
@@ -365,7 +383,7 @@ admin), and turn on push notifications for it. The bot user stays the sender.
 There is **no channel registry or plugin model**. `INotificationChannel` exists only as a test seam
 for `MatrixChannel`, and `docs/SPEC.md` lists "any channel other than Matrix" as a v1 non-goal. A new
 channel (for example a Discord webhook, the [Telegram Bot API](https://core.telegram.org/bots/api#sendmessage)
-or [ntfy](https://ntfy.sh/docs/publish/)) is a code change. This is where it would go, from the code:
+or [ntfy](https://docs.ntfy.sh/publish/)) is a code change. This is where it would go, from the code:
 
 | Piece | File | What it does |
 |---|---|---|
@@ -427,8 +445,7 @@ For it to run, all of these must hold:
 
 | Setting (`ASF.json`) | Needed value | Default |
 |---|---|---|
-| `PluginsUpdateMode` | `Whitelist` (the list names the plugins to update) | `Whitelist` |
-| `PluginsUpdateList` | contains `ASFNotifier` | empty, so nothing is updated |
+| `PluginsUpdateMode` and `PluginsUpdateList` | `Whitelist` with `ASFNotifier` in the list, or `Blacklist` without it | `Whitelist`, empty list, so nothing is updated |
 | `UpdateChannel` | `Stable` (or `PreRelease`), not `None` | `Stable` |
 | `UpdatePeriod` | greater than `0` (hours between checks) | `24` |
 
@@ -438,10 +455,12 @@ How it behaves:
   `update` command (Owner access). The `updateplugins` command checks plugins only.
 - **What it downloads.** The plugin looks at the latest GitHub release of this repository (pre-releases
   are skipped on the `Stable` channel), reads the release tag as a version (so tags are plain versions
-  such as `1.0.0.0`, no `v` prefix), and downloads `ASFNotifier.zip` from it if that version is newer
-  than the installed one. Nothing is downloaded when the installed version is the same or newer.
+  such as `1.0.0.0`, no `v` prefix), and downloads the release zip (`ASFNotifier.zip`, the only one)
+  if that version is newer than the installed one. Nothing is downloaded when the installed version is
+  the same or newer.
 - **What happens after.** ASF replaces the plugin files in `plugins/ASFNotifier/` and then **restarts
-  itself** (or exits, see below). The new version is loaded on the next start.
+  itself**, or exits when `AutoRestart` is `false` or in Docker (below). The new version is loaded on
+  the next start.
 - **In Docker.** The Docker image starts ASF with `--no-restart`, so ASF **exits** instead of
   restarting itself. Run the container with a restart policy (`restart: unless-stopped` in the
   example above, or `--restart unless-stopped`) so Docker starts it again with the new plugin.
@@ -460,7 +479,8 @@ Any one of these is enough:
   that updates are disabled for the plugin at start.
 - Set `UpdatePeriod` to `0`. ASF still checks, but only logs that a new version is available and
   downloads nothing. The `update` and `updateplugins` commands still download.
-- Set `UpdateChannel` to `None`. This also stops ASF's own updates.
+- Set `UpdateChannel` to `None`. This also stops ASF's own updates, and the bare `update` and
+  `updateplugins` commands then do nothing (naming a channel, as below, still works).
 - In `Blacklist` mode, list `ASFNotifier` in `PluginsUpdateList`.
 
 ### Update by hand
@@ -477,7 +497,7 @@ the channel as `Stable!` forces a re-install even when the version is not newer.
 ### Hold or pin a version
 
 ASF has no setting for "stay on version X" and always updates to the latest release. To stay on a
-version, keep `ASFNotifier` out of the update list (or turn updates off as above) and install the
+version, turn its updates off ([above](#turn-automatic-updates-off)) and install the
 zip of that release by hand. An update never goes backwards: the installed version is replaced only
 by a newer one.
 
@@ -491,10 +511,11 @@ Release notes are on the [Releases](https://github.com/easly1989/ASF-Notifier/re
 | Log: `ASFNotifier stays idle: missing ...` or `invalid ...` | The error names the key: `Matrix.HomeserverUrl`, `Matrix.RoomId`, or the token (`Matrix.AccessToken` or the environment variable). A room alias, a URL with credentials or a token with whitespace is invalid. `!notifytest` shows the same reason. |
 | Log: `Matrix rejected the credentials or permissions (401 ...)` or `(403 ...)` | The plugin is **degraded**. 401: the token is wrong or revoked, so make a new one. 403: the bot user is not joined to the room, or may not post (the log names the room ID). While degraded, notifications are dropped and one send is tried every 10 minutes; a success restores delivery. `!notifytest` always tries. |
 | `429 M_LIMIT_EXCEEDED` | The homeserver rate-limits the bot user. The plugin waits the time the server asks (at most 60 s) and retries the same message. If it repeats, ask the admin to relax the limit for that user. |
+| Log: `Matrix rejected a notification (<status> <errcode>), it was dropped` | Another 4xx answer, such as 400, 404 or 413: the homeserver refused that one message, so it is not retried. Check the room ID and the homeserver URL; delivery of later messages is unaffected. |
 | `Test notification failed: timeout` or `network error` | The homeserver is unreachable from ASF. Check the URL and the container's network. Other failures retry with backoff (2 s doubling to 5 min). |
 | Nothing arrives, no error | Check the event is on ([table](#events)) and not turned off for that bot, that the room is unencrypted, and that the notification was not suppressed by dedupe or the cap. |
 | Nothing arrives on Telegram, Discord, ... | The plugin only posts to Matrix. Check the message is in the Matrix room first, then the bridge ([bridges](#1-bridge-the-alerts-room-to-the-other-network)). |
-| The plugin did not update | Check [the four settings](#automatic-updates) and ASF's log, which names the plugin when it checks or skips it. In Docker, also check the container has a restart policy and a writable `plugins` mount. |
+| The plugin did not update | Check [the update settings](#automatic-updates) and ASF's log, which names the plugin when it checks or skips it. In Docker, also check the container has a restart policy and a writable `plugins` mount. |
 
 ## Building
 
@@ -502,6 +523,19 @@ See `CLAUDE.md` for the build, test and packaging commands. CI checks the plugin
 OS-specific builds (issue #23). The trim check is necessary but not sufficient: it proves every referenced
 type and member exists, not that the code runs. The smoke test covers only the `!notifytest` happy path on linux-x64.
 The design is in [`docs/SPEC.md`](docs/SPEC.md).
+
+## Support the project
+
+ASF-Notifier is free and open source. If it's useful to you, consider a donation: it genuinely
+helps and is much appreciated. ♥ The easiest way is
+[**Buy Me a Coffee**](https://buymeacoffee.com/easly1989). If you prefer another,
+the [donation page](https://easly1989.github.io/donate.html) lists them all:
+[PayPal](https://paypal.me/carloruggiero),
+[Stripe](https://buy.stripe.com/8x26oAeqA7h6dPk80hfbq00),
+[Liberapay](https://liberapay.com/amon2126/donate) or
+[GitHub Sponsors](https://github.com/sponsors/easly1989).
+
+More projects on the [website](https://easly1989.github.io/).
 
 ## Licence
 
