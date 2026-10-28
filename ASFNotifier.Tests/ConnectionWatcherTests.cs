@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.Json;
 using System.Threading.Tasks;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using SteamKit2;
@@ -379,6 +380,22 @@ internal sealed class ConnectionWatcherTests {
 		Assert.AreEqual(NotificationKind.BotDisconnected, Host.Emitted.Single().Kind);
 		Assert.IsNull(watcher.OnLoggedOn("bot1"));
 		Assert.IsFalse(watcher.IsTracked("bot1"));
+	}
+
+	// Per-bot BotDisconnected off: the real filter's answer feeds the host, so no lone reconnect follows
+	[TestMethod]
+	internal void ABotWithDisconnectedOffPerBotGetsNoLoneReconnected() {
+		using ConnectionWatcher watcher = Watcher();
+		NotifierSettings global = TestData.Settings(TestData.ConfigJson(), TestData.Token);
+		BotSettings off = BotSettings.Parse("bot1", JsonSerializer.Deserialize<Dictionary<string, JsonElement>>("{\"ASFNotifier\": {\"Events\": {\"BotDisconnected\": false}}}"), new FakeLog())!;
+
+		watcher.OnDisconnected("bot1", EResult.NoConnection, true, null);
+		Host.Accepts = Filter.Allows(new Notification(NotificationKind.BotDisconnected, "bot1", Time.Now), global, off);
+		Time.Advance(TimeSpan.FromMinutes(5));
+
+		Assert.IsFalse(Host.Accepts);
+		Assert.AreEqual(NotificationKind.BotDisconnected, Host.Emitted.Single().Kind);
+		Assert.IsNull(watcher.OnLoggedOn("bot1"));
 	}
 
 	[TestMethod]

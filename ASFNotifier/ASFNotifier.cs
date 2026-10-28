@@ -17,7 +17,8 @@ namespace ASFNotifier;
 // ASF exports every IPlugin type by convention, no [Export] attribute needed
 #pragma warning disable CA1812 // ASF uses this class during runtime
 [UsedImplicitly]
-internal sealed class ASFNotifier : IASF, IBot, IBotCardsFarmerInfo, IBotCommand2, IBotConnection, IDisposable, IGitHubPluginUpdates, IWatcherHost {
+internal sealed class ASFNotifier : IASF, IBot, IBotCardsFarmerInfo, IBotCommand2, IBotConnection, IBotModules, IDisposable, IGitHubPluginUpdates, IWatcherHost {
+	private readonly BotConfigStore BotConfigs = new();
 	private readonly StopHold Hold = new();
 	private readonly RateLimiter Limiter = new(TimeProvider.System);
 
@@ -129,6 +130,7 @@ internal sealed class ASFNotifier : IASF, IBot, IBotCardsFarmerInfo, IBotCommand
 		ArgumentNullException.ThrowIfNull(bot);
 
 		try {
+			BotConfigs.Remove(bot.BotName);
 			Watcher?.OnDestroy(bot.BotName);
 		} catch (Exception e) {
 			ASF.ArchiLogger.LogGenericException(e);
@@ -163,6 +165,19 @@ internal sealed class ASFNotifier : IASF, IBot, IBotCardsFarmerInfo, IBotCommand
 	}
 
 	public Task OnBotInit(Bot bot) => Task.CompletedTask;
+
+	// ASF calls this at bot creation and whenever the bot config file changes
+	public Task OnBotInitModules(Bot bot, IReadOnlyDictionary<string, JsonElement>? additionalConfigProperties = null) {
+		ArgumentNullException.ThrowIfNull(bot);
+
+		try {
+			BotConfigs.Replace(bot.BotName, additionalConfigProperties, new AsfLog());
+		} catch (Exception e) {
+			ASF.ArchiLogger.LogGenericException(e);
+		}
+
+		return Task.CompletedTask;
+	}
 
 	public Task OnBotLoggedOn(Bot bot) {
 		ArgumentNullException.ThrowIfNull(bot);
@@ -249,7 +264,7 @@ internal sealed class ASFNotifier : IASF, IBot, IBotCardsFarmerInfo, IBotCommand
 	// true when accepted for sending (IWatcherHost.Emit). Stops are rate-checked when the hold releases them, so a stop
 	// the hold drops never uses a dedupe window or a slot, and a released one is checked once
 	private bool Emit(Notification? notification) {
-		if ((notification == null) || (Settings == null) || !Filter.Allows(notification, Settings)) {
+		if ((notification == null) || (Settings == null) || !Filter.Allows(notification, Settings, BotConfigs.Get(notification.BotName))) {
 			return false;
 		}
 

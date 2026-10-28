@@ -173,9 +173,18 @@ are not configurable.
    `Events` map wins key by key over the global map, which wins over the built-in defaults
    (section 6).
 
-The filter and the global map land first (ticket #2); per-bot settings are added later
-(ticket #7). They are read in `OnBotInitModules`, which ASF calls at bot creation and again
-whenever the bot config file changes, so edits apply without restarting ASF.
+Per-bot settings are read in `OnBotInitModules` (an `IBotModules` hook), which ASF calls at bot
+creation and again whenever the bot config file changes, so edits apply without restarting ASF.
+Each call replaces that bot's stored settings whole; a bot without a usable `ASFNotifier` object
+stores nothing and inherits the global settings; `OnBotDestroy` removes the entry. The store is a
+concurrent map keyed by bot name, because hooks run on arbitrary threads. In a bot config,
+`AsfUpdated`, unknown keys (also under `Events`) and values of the wrong JSON type each log a warning
+naming the bot and the key, and fall back to the inherited value.
+
+Precedence, first match wins: global `Enabled` → bot `Enabled` → bot `Events` key → global `Events`
+key → built-in default. `AsfUpdated` and `Suppressed` carry no bot name and skip the bot layer.
+A bot that turns `BotDisconnected` off gets no `BotReconnected` either: `Emit` returns false for
+the dropped disconnect, so the watcher never marks the outage as notified.
 
 ### 4.5 Rate limit and dedupe
 

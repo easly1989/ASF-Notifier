@@ -16,12 +16,23 @@ internal static class Filter {
 		[NotificationKind.FarmingStopped] = false
 	};
 
-	internal static bool Allows(Notification notification, NotifierSettings settings) {
+	internal static bool Allows(Notification notification, NotifierSettings settings, BotSettings? bot = null) {
 		ArgumentNullException.ThrowIfNull(notification);
 		ArgumentNullException.ThrowIfNull(settings);
 
 		if (!settings.Enabled) {
 			return false;
+		}
+
+		// Notifications without a bot (AsfUpdated, Suppressed) never see the per-bot layer
+		if ((bot != null) && (notification.BotName != null)) {
+			if (!bot.Enabled) {
+				return false;
+			}
+
+			if (bot.Events.TryGetValue(notification.Kind, out bool overridden)) {
+				return overridden;
+			}
 		}
 
 		if (settings.Events.TryGetValue(notification.Kind, out bool configured)) {
