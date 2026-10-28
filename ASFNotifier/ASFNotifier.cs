@@ -16,7 +16,7 @@ namespace ASFNotifier;
 // ASF exports every IPlugin type by convention, no [Export] attribute needed
 #pragma warning disable CA1812 // ASF uses this class during runtime
 [UsedImplicitly]
-internal sealed class ASFNotifier : IASF, IBot, IBotCommand2, IBotConnection, IDisposable, IGitHubPluginUpdates, IWatcherHost {
+internal sealed class ASFNotifier : IASF, IBot, IBotCardsFarmerInfo, IBotCommand2, IBotConnection, IDisposable, IGitHubPluginUpdates, IWatcherHost {
 	private readonly StopHold Hold = new();
 
 	private ITimer? HoldTimer;
@@ -83,6 +83,24 @@ internal sealed class ASFNotifier : IASF, IBot, IBotCommand2, IBotConnection, ID
 		Watcher?.Dispose();
 		Queue?.Dispose();
 		Tap?.Dispose();
+	}
+
+	public Task OnBotFarmingFinished(Bot bot, bool farmedSomething) {
+		ArgumentNullException.ThrowIfNull(bot);
+
+		return EmitFarming(FarmingSource.OnFinished(bot.BotName, farmedSomething, TimeProvider.System.GetUtcNow()));
+	}
+
+	public Task OnBotFarmingStarted(Bot bot) {
+		ArgumentNullException.ThrowIfNull(bot);
+
+		return EmitFarming(FarmingSource.OnStarted(bot.BotName, TimeProvider.System.GetUtcNow()));
+	}
+
+	public Task OnBotFarmingStopped(Bot bot) {
+		ArgumentNullException.ThrowIfNull(bot);
+
+		return EmitFarming(FarmingSource.OnStopped(bot.BotName, TimeProvider.System.GetUtcNow()));
 	}
 
 	public async Task<string?> OnBotCommand(Bot bot, EAccess access, string message, string[] args, ulong steamID = 0) {
@@ -173,6 +191,17 @@ internal sealed class ASFNotifier : IASF, IBot, IBotCommand2, IBotConnection, ID
 	BotStatus? IWatcherHost.GetStatus(string botName) => Bot.BotsReadOnly?.GetValueOrDefault(botName) is { } bot ? new BotStatus(bot.KeepRunning, bot.IsConnectedAndLoggedOn, RequiredInputOf(bot)) : null;
 
 	void IWatcherHost.OnError(Exception exception) => ASF.ArchiLogger.LogGenericException(exception);
+
+	// Hooks only enqueue; Emit never awaits network I/O
+	private Task EmitFarming(Notification? notification) {
+		try {
+			Emit(notification);
+		} catch (Exception e) {
+			ASF.ArchiLogger.LogGenericException(e);
+		}
+
+		return Task.CompletedTask;
+	}
 
 	private static string? RequiredInputOf(Bot bot) => bot.RequiredInput == ASF.EUserInputType.None ? null : bot.RequiredInput.ToString();
 
