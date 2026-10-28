@@ -10,8 +10,9 @@ internal readonly record struct BotStatus(bool KeepRunning, bool IsLoggedOn, str
 
 // The plugin side of the disconnect timer, called on a timer thread
 internal interface IWatcherHost {
-	// true when the notification was accepted for sending: it passed the filter (and, from #8, dedupe and the hourly
-	// cap) and was queued or held. BotReconnected follows only an accepted BotDisconnected.
+	// true when the notification was accepted for sending: it passed the filter, dedupe and the hourly cap and was
+	// queued, or it is a stop the stop hold took (rate-checked on release). BotReconnected follows only an accepted
+	// BotDisconnected.
 	bool Emit(Notification notification);
 
 	// null when ASF no longer has the bot
@@ -26,8 +27,8 @@ internal sealed class ConnectionWatcher : IDisposable {
 	private readonly IWatcherHost Host;
 	private readonly Func<bool> IsShuttingDown;
 
-	// Lock order: Lock may be held while taking the tap's lock and, through Host.Emit, the filter, the stop hold and the
-	// send queue. None of them calls back into the watcher, so they never take Lock while holding their own.
+	// Lock order: Lock may be held while taking the tap's lock and, through Host.Emit, the filter, the stop hold, the rate
+	// limiter and the send queue. None of them calls back into the watcher, so they never take Lock while holding their own.
 	private readonly Lock Lock = new();
 	private readonly TimeSpan NotifyAfter;
 

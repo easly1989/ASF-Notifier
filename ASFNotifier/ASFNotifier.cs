@@ -19,6 +19,7 @@ namespace ASFNotifier;
 [UsedImplicitly]
 internal sealed class ASFNotifier : IASF, IBot, IBotCardsFarmerInfo, IBotCommand2, IBotConnection, IDisposable, IGitHubPluginUpdates, IWatcherHost {
 	private readonly StopHold Hold = new();
+	private readonly RateLimiter Limiter = new(TimeProvider.System);
 
 	private ITimer? HoldTimer;
 	private NotifyTestCommand? NotifyTest;
@@ -245,7 +246,8 @@ internal sealed class ASFNotifier : IASF, IBot, IBotCardsFarmerInfo, IBotCommand
 
 	private static string? RequiredInputOf(Bot bot) => bot.RequiredInput == ASF.EUserInputType.None ? null : bot.RequiredInput.ToString();
 
-	// true when accepted for sending (IWatcherHost.Emit); the rate limiter (#8) adds its verdict here
+	// true when accepted for sending (IWatcherHost.Emit). Stops are rate-checked when the hold releases them, so a stop
+	// the hold drops never uses a dedupe window or a slot, and a released one is checked once
 	private bool Emit(Notification? notification) {
 		if ((notification == null) || (Settings == null) || !Filter.Allows(notification, Settings)) {
 			return false;
@@ -258,8 +260,10 @@ internal sealed class ASFNotifier : IASF, IBot, IBotCardsFarmerInfo, IBotCommand
 			return true;
 		}
 
-		return Queue?.Enqueue(notification) ?? false;
+		return Pass(notification);
 	}
+
+	private bool Pass(Notification notification) => Queue is { } queue && Limiter.Pass(notification, queue.Enqueue);
 
 	// Timer callback: sends the held stops that are due unless ASF is going down, then re-arms for the rest
 	private void ReleaseHeldStops() {
@@ -274,7 +278,7 @@ internal sealed class ASFNotifier : IASF, IBot, IBotCardsFarmerInfo, IBotCommand
 			}
 
 			foreach (Notification notification in Hold.Release(now, IsShuttingDown, runningBots)) {
-				Queue?.Enqueue(notification);
+				Pass(notification);
 			}
 
 			if (Hold.NextDue is { } due) {

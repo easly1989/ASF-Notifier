@@ -93,6 +93,14 @@ internal sealed class FilterAndFormatterTests {
 	}
 
 	[TestMethod]
+	internal void FormatterSuppressedRow() {
+		FormattedMessage message = Formatter.Format(new Notification(NotificationKind.Suppressed, null, DateTimeOffset.UnixEpoch, Count: 7));
+
+		Assert.AreEqual("⚠️ ASF-Notifier — 7 notifications suppressed in the last hour (rate limit)", message.PlainText);
+		Assert.AreEqual("⚠️ <b>ASF-Notifier</b> — 7 notifications suppressed in the last hour (rate limit)", message.Html);
+	}
+
+	[TestMethod]
 	internal void GlobalDisabledDropsEverything() {
 		NotifierSettings disabled = TestData.Settings("""{"ASFNotifier": {"Enabled": false}}""");
 
