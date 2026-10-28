@@ -20,6 +20,9 @@ internal static class Formatter {
 			NotificationKind.BotDisconnected when notification.Reason is { } reason => new FormattedMessage($"🟠 {bot} — disconnected for {Duration(notification.Duration)} ({reason})", $"🟠 {boldBot} — disconnected for {Duration(notification.Duration)} ({Code(reason)})"),
 			NotificationKind.BotDisconnected => new FormattedMessage($"🟠 {bot} — disconnected for {Duration(notification.Duration)}", $"🟠 {boldBot} — disconnected for {Duration(notification.Duration)}"),
 			NotificationKind.BotReconnected => new FormattedMessage($"🟢 {bot} — reconnected after {Duration(notification.Duration)}", $"🟢 {boldBot} — reconnected after {Duration(notification.Duration)}"),
+			NotificationKind.FarmingFinished => new FormattedMessage($"✅ {bot} — farming finished", $"✅ {boldBot} — farming finished"),
+			NotificationKind.FarmingStarted => new FormattedMessage($"▶️ {bot} — farming started", $"▶️ {boldBot} — farming started"),
+			NotificationKind.FarmingStopped => new FormattedMessage($"⏸️ {bot} — farming stopped", $"⏸️ {boldBot} — farming stopped"),
 			NotificationKind.Test => new FormattedMessage($"🧪 ASF-Notifier test from {bot} — delivery works", $"🧪 <b>ASF-Notifier</b> test from {boldBot} — delivery works"),
 			_ => throw new NotSupportedException(notification.Kind.ToString())
 		};
