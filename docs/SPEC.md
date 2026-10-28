@@ -74,7 +74,9 @@ template's submodule already points at commit `c156c7b` (= `6.3.10.6`).
 6. **`IUpdateAware` never fires in Docker.** `BuildInfo.CanUpdate` is `false` for the `docker`
    variant, and `ASF.Update` returns before downloading. The update event is therefore
    detected at startup by comparing the running ASF version with the last one the plugin saw
-   (section 5.5).
+   (section 5.5). This concerns ASF's own update only: plugin updates still work in Docker
+   (`ASF.Update` calls `PluginsCore.UpdatePlugins` when ASF itself was not updated), and the image's
+   `--no-restart` makes ASF exit after one, so the container needs a restart policy.
 7. **No plugin shutdown hook.** No interface in 6.3.10.6 announces ASF shutdown. ASF exits
    through `Environment.Exit`, which runs `AppDomain.CurrentDomain.ProcessExit` handlers. The
    plugin flushes there (section 10.1) and learns of a signal-driven shutdown earlier through
