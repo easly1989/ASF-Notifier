@@ -222,7 +222,8 @@ Applied after the filter, before the queue (`RateLimiter`):
   them. The limiter never calls back into the watcher or the stop hold.
 
 Values are constants in v1 (10 minutes, 20 per hour); they become config keys only if needed.
-The clock is injected (`TimeProvider`) so tests control time. Windows and slots use its
+The clock is injected (the plugin's own `Clock`, not `TimeProvider`, which ASF's trimmed builds
+drop: issue #23) so tests control time with `FakeClock`. Windows and slots use its
 monotonic timestamps (`GetTimestamp`), so a wall clock stepping back mutes nothing; wall time
 only stamps the summary.
 
@@ -607,7 +608,7 @@ returns at once.
   no tests). Project `ASFNotifier.Tests`. ASF's analyzers apply to it too, with no
   suppressions beyond ASF's own (`internal` test classes, `[assembly: DiscoverInternals]`).
 - **What is unit-tested:** the core, which has no ASF types: settings parsing and merge
-  (global, per bot, env var), filter, rate limiter and dedupe (with a fake `TimeProvider`),
+  (global, per bot, env var), filter, rate limiter and dedupe (with `FakeClock`),
   formatter (every row of section 8, HTML escaping), `ConnectionWatcher` state machine (fake
   time, fake bot state), stop classifier (synthetic tap entries, shutdown flag, required
   input), the stop hold (one bot, every bot together, shutdown meanwhile), `EResult` token

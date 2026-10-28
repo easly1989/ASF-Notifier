@@ -34,3 +34,7 @@ jobs:
 
     - name: Test Release
       run: dotnet test ASFNotifier.Tests -c Release --no-build --nologo
+
+  # ASF's OS-specific builds are trimmed: a type or member ASF itself never uses is gone at run time (issue #23)
+  trimmed-asf:
+    uses: ./.github/workflows/trimmed-asf.yml

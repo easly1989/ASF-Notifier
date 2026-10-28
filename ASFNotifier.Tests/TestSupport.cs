@@ -34,7 +34,7 @@ internal sealed class FakeLog : INotifierLog {
 	public void Warning(string message) => Warnings.Add(message);
 }
 
-internal sealed class FakeTimeProvider : TimeProvider {
+internal sealed class FakeClock : Clock {
 	// A test may dispose a timer from another thread while Advance runs
 	private readonly Lock Lock = new();
 
@@ -53,11 +53,11 @@ internal sealed class FakeTimeProvider : TimeProvider {
 	// Wall clock: setting it is a clock jump and leaves the monotonic timestamp alone; Advance moves both
 	internal DateTimeOffset Now { get; set; } = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
 
-	public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+	internal override long TimestampFrequency => TimeSpan.TicksPerSecond;
 
 	private long Elapsed;
 
-	public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period) {
+	internal override IClockTimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period) {
 		FakeTimer timer = new(this, callback, state);
 
 		lock (Lock) {
@@ -70,9 +70,9 @@ internal sealed class FakeTimeProvider : TimeProvider {
 		return timer;
 	}
 
-	public override long GetTimestamp() => Elapsed;
+	internal override long GetTimestamp() => Elapsed;
 
-	public override DateTimeOffset GetUtcNow() => Now;
+	internal override DateTimeOffset GetUtcNow() => Now;
 
 	// Moves the clock, firing each timer that falls due on the way at its due time, on the calling thread
 	internal void Advance(TimeSpan span) {
@@ -103,7 +103,7 @@ internal sealed class FakeTimeProvider : TimeProvider {
 		}
 	}
 
-	private sealed class FakeTimer(FakeTimeProvider owner, TimerCallback callback, object? state) : ITimer {
+	private sealed class FakeTimer(FakeClock owner, TimerCallback callback, object? state) : IClockTimer {
 		internal DateTimeOffset? Due { get; private set; }
 
 		private TimeSpan Period = Timeout.InfiniteTimeSpan;
@@ -118,12 +118,6 @@ internal sealed class FakeTimeProvider : TimeProvider {
 		public void Dispose() {
 			Due = null;
 			owner.Remove(this);
-		}
-
-		public ValueTask DisposeAsync() {
-			Dispose();
-
-			return ValueTask.CompletedTask;
 		}
 
 		internal void Fire() {

@@ -23,7 +23,7 @@ internal sealed class SendQueue : IDisposable {
 	private readonly Channel<Notification> Queue;
 	private readonly CancellationTokenSource StopWaiting = new();
 	private readonly INotificationChannel Target;
-	private readonly TimeProvider TimeProvider;
+	private readonly Clock Clock;
 	private readonly Task Worker;
 
 	private long FlushDeadline; // Environment.TickCount64 value, set when shutdown starts
@@ -37,11 +37,11 @@ internal sealed class SendQueue : IDisposable {
 	internal bool IsStopped => Worker.IsCompleted;
 
 	// delay and flushTimeout are test seams; production passes neither
-	internal SendQueue(INotificationChannel target, INotifierLog log, TimeProvider timeProvider, Func<TimeSpan, CancellationToken, Task>? delay = null, TimeSpan? flushTimeout = null) {
+	internal SendQueue(INotificationChannel target, INotifierLog log, Clock clock, Func<TimeSpan, CancellationToken, Task>? delay = null, TimeSpan? flushTimeout = null) {
 		Target = target;
 		Log = log;
-		TimeProvider = timeProvider;
-		Delay = delay ?? ((span, token) => Task.Delay(span, timeProvider, token));
+		Clock = clock;
+		Delay = delay ?? Task.Delay;
 		FlushTimeout = flushTimeout ?? DefaultFlushTimeout;
 		Queue = Channel.CreateBounded<Notification>(new BoundedChannelOptions(Capacity) { FullMode = BoundedChannelFullMode.DropOldest, SingleReader = true }, OnDropped);
 		Worker = Task.Run(RunAsync);
@@ -156,7 +156,7 @@ internal sealed class SendQueue : IDisposable {
 				return;
 			}
 
-			DateTimeOffset now = TimeProvider.GetUtcNow();
+			DateTimeOffset now = Clock.GetUtcNow();
 
 			if ((LastDropLog == null) || ((now - LastDropLog.Value) >= DropLogInterval)) {
 				line = $"The send queue is full: {DroppedSinceLog} oldest notification(s) dropped";
@@ -236,8 +236,9 @@ internal sealed class SendQueue : IDisposable {
 	}
 
 	private async Task RunAsync() {
-		// Restarts the read loop after an unexpected error; ends once the queue is closed and drained or abandoned
-		while (!Queue.Reader.Completion.IsCompleted) {
+		// Restarts the read loop after an unexpected error; ends once the queue is closed and drained or abandoned.
+		// The loop ending normally is the queue closed and drained: the trimmed ASF has no ChannelReader.Completion (issue #23)
+		while (true) {
 			try {
 				await foreach (Notification notification in Queue.Reader.ReadAllAsync(Abandon.Token).ConfigureAwait(false)) {
 					try {
@@ -250,6 +251,8 @@ internal sealed class SendQueue : IDisposable {
 						Interlocked.Decrement(ref Pending);
 					}
 				}
+
+				return;
 			} catch (OperationCanceledException) {
 				// Abandoned at the flush deadline
 				return;

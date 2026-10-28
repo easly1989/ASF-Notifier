@@ -20,14 +20,14 @@ internal sealed class MatrixChannelTests {
 		internal MatrixChannel Channel { get; }
 		internal FakeHandler Handler { get; } = new();
 		internal FakeLog Log { get; } = new();
-		internal FakeTimeProvider Time { get; } = new();
+		internal FakeClock Time { get; } = new();
 
 		internal Rig() {
 			Client = MatrixChannel.CreateHttpClient(Handler);
 			Channel = new MatrixChannel(Client, TestData.Homeserver, TestData.RoomId, TestData.Token, Time, Log);
 		}
 
-		public void Deconstruct(out MatrixChannel channel, out FakeHandler handler, out FakeLog log, out FakeTimeProvider time) {
+		public void Deconstruct(out MatrixChannel channel, out FakeHandler handler, out FakeLog log, out FakeClock time) {
 			channel = Channel;
 			handler = Handler;
 			log = Log;
@@ -50,10 +50,16 @@ internal sealed class MatrixChannelTests {
 	}
 
 	[TestMethod]
-	internal void ResponseBufferIsCappedAt64KiB() {
-		using HttpClient client = MatrixChannel.CreateHttpClient();
+	[DataRow(64 * 1024, SendOutcome.Sent)]
+	[DataRow((64 * 1024) + 1, SendOutcome.Transient)]
+	internal async Task ResponseBodyIsCappedAt64KiB(int bodyLength, SendOutcome expected) {
+		using Rig rig = new();
+		(MatrixChannel channel, FakeHandler handler, _, _) = rig;
+		handler.Enqueue(HttpStatusCode.OK, new string('x', bodyLength));
 
-		Assert.AreEqual(64 * 1024, client.MaxResponseContentBufferSize);
+		SendResult result = await Send(channel).ConfigureAwait(false);
+
+		Assert.AreEqual(expected, result.Outcome);
 	}
 
 	[TestMethod]
@@ -108,6 +114,23 @@ internal sealed class MatrixChannelTests {
 				response.Headers.TryAddWithoutValidation("Retry-After", retryAfterHeader);
 			}
 		});
+
+		SendResult result = await Send(channel).ConfigureAwait(false);
+
+		Assert.AreEqual(SendOutcome.RetryAfter, result.Outcome);
+		Assert.AreEqual(expectedMs < 0 ? null : TimeSpan.FromMilliseconds(expectedMs), result.Delay);
+	}
+
+	// The fake clock reads 2026-01-01 00:00:00 UTC
+	[TestMethod]
+	[DataRow("Thu, 01 Jan 2026 00:00:30 GMT", 30000)]
+	[DataRow("Thu, 01 Jan 2026 01:00:00 GMT", 60000)]
+	[DataRow("Wed, 31 Dec 2025 23:59:00 GMT", 0)]
+	[DataRow("soon", -1)]
+	internal async Task RetryAfterHttpDateCountsFromNow(string retryAfterHeader, int expectedMs) {
+		using Rig rig = new();
+		(MatrixChannel channel, FakeHandler handler, _, _) = rig;
+		handler.Enqueue((HttpStatusCode) 429, """{"errcode": "M_LIMIT_EXCEEDED"}""", response => response.Headers.TryAddWithoutValidation("Retry-After", retryAfterHeader));
 
 		SendResult result = await Send(channel).ConfigureAwait(false);
 
@@ -185,7 +208,7 @@ internal sealed class MatrixChannelTests {
 	[TestMethod]
 	internal async Task DegradedGateRecoveryAndLogOnlyOnStateChange() {
 		using Rig rig = new();
-		(MatrixChannel channel, FakeHandler handler, FakeLog log, FakeTimeProvider time) = rig;
+		(MatrixChannel channel, FakeHandler handler, FakeLog log, FakeClock time) = rig;
 		handler.Enqueue(HttpStatusCode.Unauthorized, """{"errcode": "M_UNKNOWN_TOKEN"}""");
 		await Send(channel).ConfigureAwait(false);
 
@@ -254,7 +277,7 @@ internal sealed class MatrixChannelTests {
 	[TestMethod]
 	internal async Task TokenNeverAppearsInLogsOrResultsOnAnyErrorPath() {
 		using Rig rig = new();
-		(MatrixChannel channel, FakeHandler handler, FakeLog log, FakeTimeProvider time) = rig;
+		(MatrixChannel channel, FakeHandler handler, FakeLog log, FakeClock time) = rig;
 		string reflected = $$"""{"errcode": "{{TestData.Token}}", "error": "bad token {{TestData.Token}}", "retry_after_ms": 10}""";
 		HttpStatusCode[] statuses = [HttpStatusCode.Unauthorized, HttpStatusCode.Forbidden, (HttpStatusCode) 429, HttpStatusCode.InternalServerError, HttpStatusCode.BadRequest];
 		SendResult[] results = new SendResult[statuses.Length + 2];

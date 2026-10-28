@@ -7,7 +7,7 @@ namespace ASFNotifier;
 // Spec section 4.5: after the filter (and, for stops, the stop hold), before the queue. Test never comes here.
 // Lock order: Lock is held while calling enqueue, so the summary lands right before its message; the queue never
 // calls back into the limiter, and the limiter never calls the watcher or the stop hold.
-internal sealed class RateLimiter(TimeProvider timeProvider) {
+internal sealed class RateLimiter(Clock clock) {
 	internal const int HourlyCap = 20;
 	internal static readonly TimeSpan CapWindow = TimeSpan.FromHours(1);
 	internal static readonly TimeSpan DedupeWindow = TimeSpan.FromMinutes(10);
@@ -31,15 +31,15 @@ internal sealed class RateLimiter(TimeProvider timeProvider) {
 		ArgumentNullException.ThrowIfNull(enqueue);
 
 		lock (Lock) {
-			long now = timeProvider.GetTimestamp();
+			long now = clock.GetTimestamp();
 
-			while ((Slots.Count > 0) && (timeProvider.GetElapsedTime(Slots.Peek(), now) >= CapWindow)) {
+			while ((Slots.Count > 0) && (clock.GetElapsedTime(Slots.Peek(), now) >= CapWindow)) {
 				Slots.Dequeue();
 			}
 
 			(NotificationKind, string?) key = (notification.Kind, notification.BotName);
 			bool closesOutage = (notification is { Kind: NotificationKind.BotReconnected, BotName: { } bot }) && OpenOutages.Contains(bot);
-			bool deduped = !closesOutage && LastSent.TryGetValue(key, out long last) && (timeProvider.GetElapsedTime(last, now) < DedupeWindow);
+			bool deduped = !closesOutage && LastSent.TryGetValue(key, out long last) && (clock.GetElapsedTime(last, now) < DedupeWindow);
 
 			// The messages that must never be lost; they still take a slot when there is one
 			bool exempt = notification.Kind is NotificationKind.BotStoppedByAsf or NotificationKind.BotReconnected;
@@ -51,7 +51,7 @@ internal sealed class RateLimiter(TimeProvider timeProvider) {
 			}
 
 			// enqueue takes the queue's lock and may log a drop under ours: limiter → queue, never the reverse
-			if ((SuppressedCount > 0) && enqueue(new Notification(NotificationKind.Suppressed, null, timeProvider.GetUtcNow(), Count: SuppressedCount))) {
+			if ((SuppressedCount > 0) && enqueue(new Notification(NotificationKind.Suppressed, null, clock.GetUtcNow(), Count: SuppressedCount))) {
 				// Rides along the message that passes, so it may be the one message above the cap in that hour
 				TakeSlot(now);
 				SuppressedCount = 0;

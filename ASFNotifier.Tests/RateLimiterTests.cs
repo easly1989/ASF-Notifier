@@ -8,7 +8,7 @@ namespace ASFNotifier.Tests;
 #pragma warning disable CA1812 // MSTest uses this class during runtime
 [TestClass]
 internal sealed class RateLimiterTests {
-	private readonly FakeTimeProvider Clock = new();
+	private readonly FakeClock Clock = new();
 	private readonly List<Notification> Queued = [];
 
 	private readonly RateLimiter Limiter;
