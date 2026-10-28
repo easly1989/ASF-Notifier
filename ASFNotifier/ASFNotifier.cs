@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using ArchiSteamFarm.Core;
 using ArchiSteamFarm.Plugins.Interfaces;
 using ArchiSteamFarm.Steam;
+using ArchiSteamFarm.Storage;
 using JetBrains.Annotations;
 using NLog;
 using SteamKit2;
@@ -66,6 +67,9 @@ internal sealed class ASFNotifier : IASF, IBot, IBotCardsFarmerInfo, IBotCommand
 
 			Settings = settings;
 			NotifyTest = new NotifyTestCommand(settings, channel, TimeProvider.System, null);
+
+				// Last: Settings and Queue are ready for the Emit
+				CheckAsfVersion();
 		} catch (Exception e) {
 			ASF.ArchiLogger.LogGenericException(e);
 		}
@@ -191,6 +195,42 @@ internal sealed class ASFNotifier : IASF, IBot, IBotCardsFarmerInfo, IBotCommand
 	BotStatus? IWatcherHost.GetStatus(string botName) => Bot.BotsReadOnly?.GetValueOrDefault(botName) is { } bot ? new BotStatus(bot.KeepRunning, bot.IsConnectedAndLoggedOn, RequiredInputOf(bot)) : null;
 
 	void IWatcherHost.OnError(Exception exception) => ASF.ArchiLogger.LogGenericException(exception);
+
+	// Spec section 5.5: the adapter around AsfVersionSource; the global database is loaded before plugins init
+	private void CheckAsfVersion() {
+		GlobalDatabase? database = ASF.GlobalDatabase;
+
+		if (database == null) {
+			return;
+		}
+
+		Version current = AsfVersionSource.RunningVersion;
+		JsonElement storedElement = database.LoadFromJsonStorage(AsfVersionSource.StorageKey);
+
+		// An undefined element means nothing stored; a non-string value is garbage and is treated as unparsable
+		string? stored = storedElement.ValueKind switch {
+			JsonValueKind.Undefined => null,
+			JsonValueKind.String => storedElement.GetString(),
+			_ => storedElement.GetRawText()
+		};
+
+		AsfVersionDecision decision = AsfVersionSource.Decide(stored, current);
+
+		switch (decision.Action) {
+			case AsfVersionAction.None:
+				return;
+			case AsfVersionAction.Updated when decision.Stored != null:
+				Emit(AsfVersionSource.Updated(decision.Stored, current, TimeProvider.System.GetUtcNow()));
+
+				break;
+			case AsfVersionAction.Downgrade:
+				ASF.ArchiLogger.LogGenericInfo($"ASF is older than the last seen version ({decision.Stored} → {current}), no message sent", nameof(ASFNotifier));
+
+				break;
+		}
+
+		database.SaveToJsonStorage(AsfVersionSource.StorageKey, current.ToString());
+	}
 
 	// Hooks only enqueue; Emit never awaits network I/O
 	private Task EmitFarming(Notification? notification) {
