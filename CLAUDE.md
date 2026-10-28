@@ -22,8 +22,8 @@ Requires the .NET 10 SDK. Clone with submodules: `git clone --recursive` (or
 
 - Build: `dotnet build -c Release`
 - Test: `dotnet test ASFNotifier.Tests -c Release`
-- Package: `dotnet publish ASFNotifier -c Release -o out/ASFNotifier`, then zip the folder's
-  contents (not the folder) as `ASFNotifier.zip` (CI does this; see
+- Package: `dotnet publish ASFNotifier -c Release -o out/plugin/ASFNotifier -p:UseAppHost=false`,
+  then zip the folder's contents (not the folder) as `ASFNotifier.zip` (CI does this; see
   `.github/workflows/publish.yml`).
 - Run: copy the published folder to ASF's `plugins/ASFNotifier/` and restart ASF.
 

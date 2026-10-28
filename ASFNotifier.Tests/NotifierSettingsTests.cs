@@ -93,6 +93,26 @@ internal sealed class NotifierSettingsTests {
 		Assert.IsTrue(log.Warnings.Any(static line => line.Contains("Bogus", StringComparison.Ordinal)));
 	}
 
+	// The README documents exactly these event keys
+	[TestMethod]
+	internal void EveryDocumentedEventKeyIsParsed() {
+		string[] keys = ["BotStoppedByAsf", "BotDisconnected", "BotReconnected", "FarmingFinished", "AsfUpdated", "BotStopped", "FarmingStarted", "FarmingStopped"];
+		FakeLog log = new();
+
+		NotifierSettings settings = TestData.Settings(TestData.ConfigJson(", \"Events\": {" + string.Join(", ", keys.Select(static key => $"\"{key}\": false")) + "}"), TestData.Token, log);
+
+		Assert.HasCount(keys.Length, settings.Events);
+		Assert.IsFalse(settings.Events.Values.Any(static value => value));
+		Assert.IsEmpty(log.Warnings);
+	}
+
+	[TestMethod]
+	internal void AccessTokenKeyInJsonIsRead() {
+		NotifierSettings settings = TestData.Settings("""{"ASFNotifier": {"Matrix": {"HomeserverUrl": "https://matrix.example.org", "RoomId": "!room:example.org", "AccessToken": "json-token"}}}""", null);
+
+		Assert.AreEqual("json-token", settings.AccessToken);
+	}
+
 	[TestMethod]
 	internal void FullConfigWithEnvironmentToken() {
 		FakeLog log = new();
