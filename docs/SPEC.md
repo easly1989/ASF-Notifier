@@ -179,23 +179,43 @@ whenever the bot config file changes, so edits apply without restarting ASF.
 
 ### 4.5 Rate limit and dedupe
 
-Applied after the filter, before the queue:
+Applied after the filter, before the queue (`RateLimiter`):
 
-- **Dedupe**: the same `(Kind, BotName)` is sent at most once every 10 minutes. Later ones in
+- **Dedupe**: the same `(Kind, BotName)` is sent at most once every 10 minutes, measured from
+  the last one that was sent (9:59 later is dropped, 10:00 later is sent). Later ones in
   the window are dropped and counted as suppressed. Exception: `BotReconnected` is never
   deduped when it closes a `BotDisconnected` that was sent, so every "disconnected" message
-  gets its "reconnected".
-- **Hourly cap**: at most 20 messages in any rolling 60 minutes. Beyond that, messages are
-  dropped and counted. `BotStoppedByAsf` and `BotReconnected` are exempt from the cap (they
-  are the messages that must never be lost) but still use a slot when there is one.
+  gets its "reconnected". The limiter tracks this itself: a passed `BotDisconnected` opens the
+  bot's outage, the next passed `BotReconnected`, `BotStopped` or `BotStoppedByAsf` closes it
+  (a stop ends the outage, 5.1).
+- **Hourly cap**: at most 20 messages in any rolling 60 minutes; a slot frees exactly 60
+  minutes after it was taken. Beyond that, messages are dropped and counted. `BotStoppedByAsf`
+  and `BotReconnected` are exempt from the cap (they are the messages that must never be
+  lost) but still use a slot when there is one.
 - **Summary**: there is no timer. When a notification passes and the suppressed count is
-  above zero, one `Suppressed` notification ("N notifications suppressed in the last hour")
-  is enqueued just before it, uses a slot, and resets the count. If no further notification
-  ever passes, the summary is never sent.
-- `Test` does not go through the rate limiter.
+  above zero, one `Suppressed` notification ("N notifications suppressed") is enqueued just
+  before it, uses a slot when one is free, and resets the count. The count runs from the
+  previous summary and includes dedupe drops, so the text names no period. It never stops
+  the message it precedes, so an hour can carry one summary above the cap. If no further
+  notification ever passes, the summary is never sent.
+- `Test` does not go through the rate limiter: `!notifytest` calls the channel directly
+  (section 9).
+- **Stops and the stop hold (5.3).** Stop notifications are rate-checked when the hold
+  releases them, not when they are held: a stop the hold drops (shutdown, mass stop) never
+  uses a dedupe window or a slot, and a released stop is checked once. Dedupe and the cap use
+  the release time.
+- **Accepted.** For every other kind the limiter's verdict is the emit's answer
+  (section 5.2): a `BotDisconnected` dropped by dedupe or the cap is not "notified", so its
+  outage sends no `BotReconnected`. A notification the queue refuses (it closed at shutdown)
+  takes no slot, opens or closes no outage, starts no dedupe window and is not counted; a
+  refused summary leaves the count for the next one.
+- One lock; the summary and its message are enqueued under it, so nothing lands between
+  them. The limiter never calls back into the watcher or the stop hold.
 
 Values are constants in v1 (10 minutes, 20 per hour); they become config keys only if needed.
-The clock is injected (`TimeProvider`) so tests control time.
+The clock is injected (`TimeProvider`) so tests control time. Windows and slots use its
+monotonic timestamps (`GetTimestamp`), so a wall clock stepping back mutes nothing; wall time
+only stamps the summary.
 
 ### 4.6 Background send queue
 
@@ -264,7 +284,7 @@ The timer callback reads the bot (`KeepRunning`, `IsConnectedAndLoggedOn`, `Requ
 outside the lock, then acts only if the outage it was started for is still the current one, and
 emits while holding the lock: a log-on racing it waits, so its `BotReconnected` is always queued
 after the `BotDisconnected`. Lock order: the watcher lock may be held while taking the tap's lock
-and, through the emit, the filter, the stop hold and the send queue; none of them calls back
+and, through the emit, the filter, the stop hold, the rate limiter and the send queue; none of them calls back
 into the watcher. An exception in the callback is logged through `ASF.ArchiLogger` and never
 escapes the timer thread.
 
@@ -281,8 +301,8 @@ start no other, so an outage is reported once however long it lasts. When it fir
   latest recorded disconnect and no hook reason (`OK`), so the reason comes from the tap.
 - `bot.IsConnectedAndLoggedOn == false` → emit `BotDisconnected` (`Duration` = elapsed since
   `DisconnectedAt`, `Reason` = last recorded reason). `DisconnectNotified` is set only if the
-  emit accepted it: it passed the filter (section 4.4; from ticket #8 also dedupe and the hourly
-  cap, 4.5) and was queued. With `BotDisconnected` off, or the message dropped, the outage sends
+  emit accepted it: it passed the filter (section 4.4), dedupe and the hourly
+  cap (4.5) and was queued. With `BotDisconnected` off, or the message dropped, the outage sends
   no `BotReconnected` either, and is not offered again.
 - ASF no longer has the bot → nothing; the outage ends.
 - otherwise nothing (a log-on callback was missed; reset).
@@ -497,7 +517,7 @@ and versions HTML-escaped. Bot name = ASF bot name (the config file name).
 | `FarmingStarted` | `▶️ bot1 — farming started` | `▶️ <b>bot1</b> — farming started` |
 | `FarmingStopped` | `⏸️ bot1 — farming stopped` | `⏸️ <b>bot1</b> — farming stopped` |
 | `AsfUpdated` | `⬆️ ASF updated 6.3.10.6 → 6.3.11.7` | `⬆️ ASF updated <code>6.3.10.6</code> → <code>6.3.11.7</code>` |
-| `Suppressed` | `⚠️ ASF-Notifier — 7 notifications suppressed in the last hour (rate limit)` | `⚠️ <b>ASF-Notifier</b> — 7 notifications suppressed in the last hour (rate limit)` |
+| `Suppressed` | `⚠️ ASF-Notifier — 7 notifications suppressed (rate limit)` | `⚠️ <b>ASF-Notifier</b> — 7 notifications suppressed (rate limit)` |
 | `Test` | `🧪 ASF-Notifier test from bot1 — delivery works` | `🧪 <b>ASF-Notifier</b> test from <b>bot1</b> — delivery works` |
 
 "Login failed" is used when the reason came from `HandleLoginResult()` or the hook. Durations:
@@ -505,6 +525,7 @@ whole minutes below 2 hours ("1 minute", "12 minutes"), then hours and minutes (
 "2 h 0 min"), rounded to the nearest minute so a timer firing a few milliseconds early still
 reads as the configured threshold.
 A reason in parentheses is omitted when unknown.
+`Suppressed` uses the singular for one ("1 notification suppressed").
 
 ## 9. `!notifytest` command
 
