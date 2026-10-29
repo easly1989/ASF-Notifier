@@ -24,6 +24,7 @@ internal static class Formatter {
 			NotificationKind.FarmingStarted => new FormattedMessage($"▶️ {bot} — farming started", $"▶️ {boldBot} — farming started"),
 			NotificationKind.FarmingStopped => new FormattedMessage($"⏸️ {bot} — farming stopped", $"⏸️ {boldBot} — farming stopped"),
 			NotificationKind.AsfUpdated => new FormattedMessage($"⬆️ ASF updated {notification.FromVersion} → {notification.ToVersion}", $"⬆️ ASF updated {Code(notification.FromVersion ?? "")} → {Code(notification.ToVersion ?? "")}"),
+			NotificationKind.AsfError => new FormattedMessage($"❗ {notification.BotName ?? "ASF"} — {notification.Method}(): {notification.Text}", $"❗ <b>{Html(notification.BotName ?? "ASF")}</b> — {Code($"{notification.Method}()")}: {Html(notification.Text ?? "")}"),
 			NotificationKind.Suppressed => new FormattedMessage($"⚠️ ASF-Notifier — {Suppressed(notification.Count)} (rate limit)", $"⚠️ <b>ASF-Notifier</b> — {Suppressed(notification.Count)} (rate limit)"),
 			NotificationKind.Test => new FormattedMessage($"🧪 ASF-Notifier test from {bot} — delivery works", $"🧪 <b>ASF-Notifier</b> test from {boldBot} — delivery works"),
 			_ => throw new NotSupportedException(notification.Kind.ToString())

@@ -11,6 +11,7 @@ internal static class Filter {
 		[NotificationKind.BotReconnected] = true,
 		[NotificationKind.FarmingFinished] = true,
 		[NotificationKind.AsfUpdated] = true,
+		[NotificationKind.AsfError] = false,
 		[NotificationKind.BotStopped] = false,
 		[NotificationKind.FarmingStarted] = false,
 		[NotificationKind.FarmingStopped] = false

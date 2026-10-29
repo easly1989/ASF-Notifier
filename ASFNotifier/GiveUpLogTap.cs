@@ -16,7 +16,8 @@ internal interface IGiveUpLog {
 }
 
 // Spec section 5.3: records, per bot logger, the latest ASF give-up error and the latest login or logged-off reason.
-// It keeps time, method and parsed EResult only; log text is never stored, forwarded or logged again.
+// It keeps time, method and parsed EResult only; log text is never stored or logged again. With onError, it also hands
+// every Error and Fatal entry to the AsfError source (section 5.6), off the logging thread.
 internal sealed class GiveUpLogTap : IDisposable, IGiveUpLog {
 	internal const string RuleName = "ASFNotifierTap";
 
@@ -34,16 +35,18 @@ internal sealed class GiveUpLogTap : IDisposable, IGiveUpLog {
 	private readonly Lock RegistrationLock = new();
 
 	private readonly Clock Clock;
+	private readonly Action<LoggedError>? OnError;
 
 	private TapTarget? CurrentTarget;
 	private bool Disposed;
 
-	// defer is a test seam; production hands the re-registration to the thread pool
-	internal GiveUpLogTap(LogFactory factory, Clock clock, Action<Action>? defer = null) {
+	// defer is a test seam; production hands the re-registration and onError to the thread pool
+	internal GiveUpLogTap(LogFactory factory, Clock clock, Action<Action>? defer = null, Action<LoggedError>? onError = null) {
 		ArgumentNullException.ThrowIfNull(factory);
 
 		Factory = factory;
 		Clock = clock;
+		OnError = onError;
 		// Task.Run, not ThreadPool: the trimmed ASF has no System.Threading.ThreadPool facade (issue #23)
 		Defer = defer ?? (static work => Task.Run(work));
 
@@ -89,9 +92,16 @@ internal sealed class GiveUpLogTap : IDisposable, IGiveUpLog {
 	}
 
 	// Called by NLog for every Info-or-above entry of every logger, on the logging thread: stays cheap and never throws
-	private void Record(string? loggerName, LogLevel level, string? message) {
+	private void Record(string? loggerName, LogLevel level, string? message, Exception? exception) {
 		if ((loggerName == null) || (message == null)) {
 			return;
+		}
+
+		// Deferred: emitting can log (a full queue), and logging from inside NLog's Write must not happen
+		if ((OnError is { } onError) && ((level == LogLevel.Error) || (level == LogLevel.Fatal))) {
+			LoggedError error = new(loggerName, message, Clock.GetUtcNow(), exception?.GetType().Name, exception?.ToString());
+
+			Defer(() => onError(error));
 		}
 
 		int end = message.IndexOf("() ", StringComparison.Ordinal);
@@ -180,6 +190,6 @@ internal sealed class GiveUpLogTap : IDisposable, IGiveUpLog {
 			Name = RuleName;
 		}
 
-		protected override void Write(LogEventInfo logEvent) => Tap.Record(logEvent.LoggerName, logEvent.Level, logEvent.FormattedMessage);
+		protected override void Write(LogEventInfo logEvent) => Tap.Record(logEvent.LoggerName, logEvent.Level, logEvent.FormattedMessage, logEvent.Exception);
 	}
 }

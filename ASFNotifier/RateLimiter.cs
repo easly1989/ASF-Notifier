@@ -13,7 +13,8 @@ internal sealed class RateLimiter(Clock clock) {
 	internal static readonly TimeSpan DedupeWindow = TimeSpan.FromMinutes(10);
 
 	// Windows and slots use monotonic timestamps, so a wall clock stepping back mutes nothing
-	private readonly Dictionary<(NotificationKind Kind, string? BotName), long> LastSent = [];
+	// Method is null except for AsfError, so one recurring error does not drain the hourly cap (spec section 5.6)
+	private readonly Dictionary<(NotificationKind Kind, string? BotName, string? Method), long> LastSent = [];
 	private readonly Lock Lock = new();
 
 	// Bots whose BotDisconnected went out and has no BotReconnected or stop yet
@@ -37,7 +38,7 @@ internal sealed class RateLimiter(Clock clock) {
 				Slots.Dequeue();
 			}
 
-			(NotificationKind, string?) key = (notification.Kind, notification.BotName);
+			(NotificationKind, string?, string?) key = (notification.Kind, notification.BotName, notification.Method);
 			bool closesOutage = (notification is { Kind: NotificationKind.BotReconnected, BotName: { } bot }) && OpenOutages.Contains(bot);
 			bool deduped = !closesOutage && LastSent.TryGetValue(key, out long last) && (clock.GetElapsedTime(last, now) < DedupeWindow);
 

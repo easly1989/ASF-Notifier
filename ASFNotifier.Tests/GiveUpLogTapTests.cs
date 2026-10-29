@@ -160,6 +160,49 @@ internal sealed class GiveUpLogTapTests {
 		Assert.IsFalse(factory.Configuration.LoggingRules.Any(static rule => rule.RuleName == GiveUpLogTap.RuleName));
 	}
 
+	[TestMethod]
+	internal void ErrorAndFatalEntriesAreHandedOnOffTheLoggingThread() {
+		using LogFactory factory = Factory();
+		FakeClock time = new();
+		List<Action> deferred = [];
+		List<LoggedError> errors = [];
+
+		using GiveUpLogTap tap = new(factory, time, deferred.Add, errors.Add);
+
+		factory.GetLogger("bot1").Error("OnConnected() SteamLogin is invalid!");
+		factory.GetLogger("ASF").Fatal("Init() broken");
+		factory.GetLogger("ASF").Error(new InvalidOperationException("detail"), "OnBotDisconnected()");
+		factory.GetLogger("bot1").Warn("OnConnected() only a warning");
+		factory.GetLogger("bot1").Info("OnConnected() only an info");
+
+		// Nothing runs inside NLog's Write
+		Assert.IsEmpty(errors);
+		RunAll(deferred);
+
+		Assert.HasCount(3, errors);
+		Assert.AreEqual(new LoggedError("bot1", "OnConnected() SteamLogin is invalid!", time.Now), errors[0]);
+		Assert.AreEqual("ASF", errors[1].LoggerName);
+		Assert.AreEqual("Init() broken", errors[1].Message);
+		Assert.AreEqual("OnBotDisconnected()", errors[2].Message);
+		Assert.AreEqual(nameof(InvalidOperationException), errors[2].ExceptionType);
+		StringAssert.Contains(errors[2].ExceptionText, "detail", StringComparison.Ordinal);
+
+		// The give-up record works as before
+		Assert.IsNotNull(tap.Get("bot1").GiveUpError);
+	}
+
+	[TestMethod]
+	internal void WithoutACallbackNothingIsHandedOn() {
+		using LogFactory factory = Factory();
+		List<Action> deferred = [];
+
+		using GiveUpLogTap tap = new(factory, new FakeClock(), deferred.Add);
+
+		factory.GetLogger("bot1").Error("Start() failed");
+
+		Assert.IsEmpty(deferred);
+	}
+
 	private static LogFactory Factory() => new() { Configuration = new LoggingConfiguration() };
 
 	private static void RunAll(List<Action> deferred) {

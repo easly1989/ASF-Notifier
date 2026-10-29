@@ -48,7 +48,7 @@ internal sealed class BotSettingsTests {
 	internal void FullPrecedenceTable() {
 		bool?[] keys = [null, true, false];
 
-		foreach (NotificationKind kind in new[] { NotificationKind.FarmingFinished, NotificationKind.FarmingStarted }) {
+		foreach (NotificationKind kind in new[] { NotificationKind.FarmingFinished, NotificationKind.FarmingStarted, NotificationKind.AsfError }) {
 			bool builtIn = kind == NotificationKind.FarmingFinished;
 
 			foreach (bool globalEnabled in new[] { true, false }) {

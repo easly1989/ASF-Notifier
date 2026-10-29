@@ -244,6 +244,7 @@ services:
 | `BotStopped` | A bot stopped without an ASF error: `stop` command, config edit, rename, `ShutdownOnFarmingFinished` | off |
 | `FarmingStarted` | Farming started | off |
 | `FarmingStopped` | Farming stopped | off |
+| `AsfError` | ASF or a bot logged an error (any `Error` entry in ASF's log) | off |
 
 ### Message examples
 
@@ -262,6 +263,7 @@ Each message is a Matrix `m.notice` with a plain and an HTML body.
 | `FarmingStarted` | `▶️ bot1 — farming started` |
 | `FarmingStopped` | `⏸️ bot1 — farming stopped` |
 | `AsfUpdated` | `⬆️ ASF updated 6.3.10.6 → 6.3.11.7` |
+| `AsfError` | `❗ bot1 — OnConnected(): SteamLogin is invalid!`, or `❗ ASF — ...` for ASF itself |
 | rate-limit summary | `⚠️ ASF-Notifier — 7 notifications suppressed (rate limit)` (`1 notification suppressed` for one) |
 | `!notifytest` | `🧪 ASF-Notifier test from bot1 — delivery works` |
 
@@ -286,6 +288,13 @@ parentheses is left out when it is unknown.
 - **`AsfUpdated` is detected at startup**, by comparing the running ASF version with the one the
   plugin saw last (stored in ASF's global database). It works in Docker, where ASF updates by
   replacing the image. The first start only stores the version and sends nothing.
+- **`AsfError` forwards ASF's own error lines.** Only the first line, cut at 300 characters; an
+  exception is named by its type, never its message. The plugin's own errors are never forwarded, nor
+  is any line that contains the access token. A bot's `Events.AsfError` applies to that bot's errors;
+  ASF's own errors follow the global value. The same error from the same method and bot is sent at
+  most once every 10 minutes. A failing login can also log an error next to its `BotStoppedByAsf`
+  message, so turning `AsfError` on can double that alert. Error lines are in ASF's language and may
+  name file paths or accounts: the room sees them.
 - **The queue holds 100 messages** and drops the oldest when full. On a clean ASF exit the plugin
   tries to flush the queue for up to 3 seconds.
 
@@ -298,7 +307,7 @@ parentheses is left out when it is unknown.
 - Stops in the last 10 seconds before ASF exits are not reported.
 - After a bot config edit ASF restarts the bot; if it logs on within the threshold, no
   `BotStopped` and no disconnect message is sent.
-- Only the events above. No card drops, trades or generic ASF errors, and no channel other than
+- Only the events above. No card drops or trades, and no channel other than
   Matrix.
 
 ## Other ASF bots
