@@ -184,8 +184,7 @@ internal sealed class GiveUpLogTapTests {
 		Assert.AreEqual("ASF", errors[1].LoggerName);
 		Assert.AreEqual("Init() broken", errors[1].Message);
 		Assert.AreEqual("OnBotDisconnected()", errors[2].Message);
-		Assert.AreEqual(nameof(InvalidOperationException), errors[2].ExceptionType);
-		StringAssert.Contains(errors[2].ExceptionText, "detail", StringComparison.Ordinal);
+		Assert.IsInstanceOfType<InvalidOperationException>(errors[2].Exception);
 
 		// The give-up record works as before
 		Assert.IsNotNull(tap.Get("bot1").GiveUpError);
@@ -203,6 +202,60 @@ internal sealed class GiveUpLogTapTests {
 		Assert.IsEmpty(deferred);
 	}
 
+	// AsfError off everywhere: no task, no capture, only the cheap check
+	[TestMethod]
+	internal void WithAsfErrorOffNothingIsHandedOn() {
+		using LogFactory factory = Factory();
+		List<Action> deferred = [];
+		List<LoggedError> errors = [];
+		int asked = 0;
+
+		using GiveUpLogTap tap = new(factory, new FakeClock(), deferred.Add, errors.Add, () => {
+			asked++;
+
+			return false;
+		});
+
+		factory.GetLogger("bot1").Error("OnConnected() SteamLogin is invalid!");
+		factory.GetLogger("bot1").Warn("Start() only a warning");
+
+		Assert.AreEqual(1, asked);
+		Assert.IsEmpty(deferred);
+		Assert.IsNotNull(tap.Get("bot1").GiveUpError);
+	}
+
+	// Nothing on the logging thread reads the exception's text, so one that cannot be printed costs nothing there
+	[TestMethod]
+	internal void AnExceptionThatCannotBePrintedKeepsTheGiveUpRecord() {
+		using LogFactory factory = Factory();
+		List<Action> deferred = [];
+		List<LoggedError> errors = [];
+
+		using GiveUpLogTap tap = new(factory, new FakeClock(), deferred.Add, errors.Add);
+
+		factory.GetLogger("bot1").Error(new UnprintableException(), "OnConnected() SteamLogin is invalid!");
+
+		Assert.AreEqual("OnConnected", tap.Get("bot1").GiveUpError?.Method);
+		RunAll(deferred);
+		Assert.IsInstanceOfType<UnprintableException>(errors.Single().Exception);
+	}
+
+	[TestMethod]
+	internal void TheCallbackDoesNotRunAfterDispose() {
+		using LogFactory factory = Factory();
+		List<Action> deferred = [];
+		List<LoggedError> errors = [];
+		GiveUpLogTap tap = new(factory, new FakeClock(), deferred.Add, errors.Add);
+
+		factory.GetLogger("bot1").Error("Start() failed");
+		tap.Dispose();
+		RunAll(deferred);
+		factory.GetLogger("bot1").Error("Start() failed again");
+		RunAll(deferred);
+
+		Assert.IsEmpty(errors);
+	}
+
 	private static LogFactory Factory() => new() { Configuration = new LoggingConfiguration() };
 
 	private static void RunAll(List<Action> deferred) {
@@ -212,5 +265,15 @@ internal sealed class GiveUpLogTapTests {
 
 		deferred.Clear();
 	}
+
+#pragma warning disable CA1064 // Only these tests throw and catch it
+	private sealed class UnprintableException : Exception {
+		public UnprintableException() { }
+		public UnprintableException(string message) : base(message) { }
+		public UnprintableException(string message, Exception innerException) : base(message, innerException) { }
+
+		public override string ToString() => throw new InvalidOperationException("no text");
+	}
+#pragma warning restore CA1064 // Only these tests throw and catch it
 }
 #pragma warning restore CA1812 // MSTest uses this class during runtime

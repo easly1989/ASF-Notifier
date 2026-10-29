@@ -58,7 +58,8 @@ internal sealed class ASFNotifier : IASF, IBot, IBotCardsFarmerInfo, IBotCommand
 			if (settings is { IsConfigured: true, HomeserverUrl: { } homeserver, RoomId: { } roomId, AccessToken: { } token }) {
 				channel = new MatrixChannel(MatrixChannel.CreateHttpClient(), homeserver, roomId, token, Clock.System, new AsfLog());
 				Queue = new SendQueue(channel, new AsfLog(), Clock.System);
-				Tap = new GiveUpLogTap(LogManager.LogFactory, Clock.System, onError: OnAsfError);
+				AsfErrorForwarder errors = new(() => Settings, BotConfigs, static name => Bot.BotsReadOnly?.ContainsKey(name) == true, notification => Emit(notification), new AsfLog());
+				Tap = new GiveUpLogTap(LogManager.LogFactory, Clock.System, onError: errors.Forward, wantErrors: () => errors.Wanted);
 				Watcher = new ConnectionWatcher(Tap, () => IsShuttingDown, Clock.System, TimeSpan.FromMinutes(settings.DisconnectedNotifyAfterMinutes), this);
 				HoldTimer = Clock.System.CreateTimer(_ => ReleaseHeldStops(), null, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
 				RegisterShutdownSignals();
@@ -257,18 +258,6 @@ internal sealed class ASFNotifier : IASF, IBot, IBotCardsFarmerInfo, IBotCommand
 		}
 
 		return Task.CompletedTask;
-	}
-
-	// Spec section 5.6, on the thread pool (the tap defers it). Its own failure is logged as the plugin, which is never
-	// forwarded, so it cannot loop
-	private void OnAsfError(LoggedError entry) {
-		try {
-			if ((Settings is { AccessToken: { } token }) && (AsfErrorSource.ToNotification(entry, token, static name => Bot.BotsReadOnly?.ContainsKey(name) == true) is { } notification)) {
-				Emit(notification);
-			}
-		} catch (Exception e) {
-			ASF.ArchiLogger.LogGenericException(e, nameof(ASFNotifier));
-		}
 	}
 
 	private static string? RequiredInputOf(Bot bot) => bot.RequiredInput == ASF.EUserInputType.None ? null : bot.RequiredInput.ToString();

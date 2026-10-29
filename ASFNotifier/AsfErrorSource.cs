@@ -2,8 +2,9 @@ using System;
 
 namespace ASFNotifier;
 
-// An Error or Fatal entry as the NLog tap saw it. ExceptionText is only checked for the token, never sent
-internal sealed record LoggedError(string LoggerName, string Message, DateTimeOffset At, string? ExceptionType = null, string? ExceptionText = null);
+// An Error or Fatal entry as the NLog tap saw it. The exception is read off the logging thread: its type may be sent, its
+// text is only checked for the token
+internal sealed record LoggedError(string LoggerName, string Message, DateTimeOffset At, Exception? Exception = null);
 
 // Spec section 5.6: turns an ASF error entry into an AsfError notification, or null when it must not be forwarded
 internal static class AsfErrorSource {
@@ -15,10 +16,12 @@ internal static class AsfErrorSource {
 	// Every Error the plugin writes carries this method name, so the plugin's own entries never loop back
 	internal const string SelfMethod = nameof(ASFNotifier);
 
-	internal static Notification? ToNotification(LoggedError entry, string accessToken, Func<string, bool> isBot) {
+	// stopReported: whether BotStoppedByAsf is on for that bot, so its give-up errors are not reported twice
+	internal static Notification? ToNotification(LoggedError entry, string accessToken, Func<string, bool> isBot, Func<string, bool> stopReported) {
 		ArgumentNullException.ThrowIfNull(entry);
 		ArgumentException.ThrowIfNullOrEmpty(accessToken);
 		ArgumentNullException.ThrowIfNull(isBot);
+		ArgumentNullException.ThrowIfNull(stopReported);
 
 		// ArchiLogger writes "{method}() {message}", or "{method}()" when it logs an exception
 		int end = entry.Message.IndexOf("()", StringComparison.Ordinal);
@@ -33,8 +36,17 @@ internal static class AsfErrorSource {
 			return null;
 		}
 
-		// The whole entry, exception included, so a token anywhere in it keeps all of it out of the room
-		if (entry.Message.Contains(accessToken, StringComparison.Ordinal) || (entry.ExceptionText?.Contains(accessToken, StringComparison.Ordinal) == true)) {
+		// The whole entry, exception included, so a token anywhere in it keeps all of it out of the room. An exception
+		// whose text cannot be read cannot be checked, so its entry stays out too
+		string? exceptionText;
+
+		try {
+			exceptionText = entry.Exception?.ToString();
+		} catch (Exception) {
+			return null;
+		}
+
+		if (entry.Message.Contains(accessToken, StringComparison.Ordinal) || (exceptionText?.Contains(accessToken, StringComparison.Ordinal) == true)) {
 			return null;
 		}
 
@@ -49,11 +61,16 @@ internal static class AsfErrorSource {
 			return null;
 		}
 
+		// The error behind a BotStoppedByAsf message is that message already
+		if ((botName != null) && GiveUpLogTap.GiveUpMethods.Contains(method) && stopReported(botName)) {
+			return null;
+		}
+
 		string text = FirstLine(entry.Message[(end + 2)..].Trim());
 
 		// An exception entry has no text of its own; its type says enough, its message may hold anything
-		if ((text.Length == 0) && (entry.ExceptionType != null)) {
-			text = entry.ExceptionType;
+		if ((text.Length == 0) && (entry.Exception != null)) {
+			text = entry.Exception.GetType().Name;
 		}
 
 		return new Notification(NotificationKind.AsfError, botName, entry.At, Method: method, Text: Trim(text));

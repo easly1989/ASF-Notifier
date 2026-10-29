@@ -280,7 +280,8 @@ parentheses is left out when it is unknown.
   counted as suppressed. A `BotReconnected` that closes a sent `BotDisconnected` is never deduped.
 - **Hourly cap.** 20 slots in any rolling 60 minutes. `BotStoppedByAsf`, `BotReconnected` and the
   summary use a slot when one is free but are never blocked; every other event is dropped while all
-  slots are taken. When something passes after
+  slots are taken. `AsfError` may use at most 5 of the 20, so an error storm never takes the slots the
+  other events need. When something passes after
   drops (cap or dedupe), one `N notifications suppressed (rate limit)` message is sent just before
   it; if nothing else ever passes, the summary is never sent.
 - **A short outage is silent.** A bot that reconnects within `DisconnectedNotifyAfterMinutes`
@@ -292,9 +293,10 @@ parentheses is left out when it is unknown.
   exception is named by its type, never its message. The plugin's own errors are never forwarded, nor
   is any line that contains the access token. A bot's `Events.AsfError` applies to that bot's errors;
   ASF's own errors follow the global value. The same error from the same method and bot is sent at
-  most once every 10 minutes. A failing login can also log an error next to its `BotStoppedByAsf`
-  message, so turning `AsfError` on can double that alert. Error lines are in ASF's language and may
-  name file paths or accounts: the room sees them.
+  most once every 10 minutes, and at most 5 errors an hour. The errors ASF logs when it gives up on a
+  bot (`HandleLoginResult()`, `OnLoggedOff()`, `OnLoggedOn()`, `OnConnected()`, `RequestInput()`)
+  are not forwarded for a bot whose `BotStoppedByAsf` is on: that message already reports them. Error
+  lines are in ASF's language and may name file paths or accounts: the room sees them.
 - **The queue holds 100 messages** and drops the oldest when full. On a clean ASF exit the plugin
   tries to flush the queue for up to 3 seconds.
 

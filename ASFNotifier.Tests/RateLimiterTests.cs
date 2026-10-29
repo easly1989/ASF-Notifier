@@ -273,6 +273,34 @@ internal sealed class RateLimiterTests {
 	}
 
 	[TestMethod]
+	internal void AnErrorStormKeepsToItsSubCapAndLeavesTheRestOfTheHour() {
+		for (int i = 0; i < 10; i++) {
+			Assert.AreEqual(i < RateLimiter.AsfErrorHourlyCap, PassError("bot1", $"Method{i}"), $"error {i}");
+		}
+
+		Assert.AreEqual(RateLimiter.AsfErrorHourlyCap, Queued.Count(static notification => notification.Kind == NotificationKind.AsfError));
+
+		// The other events keep the rest of the hour: the summary of the 5 drops rides on the first one, 14 more fit
+		Assert.IsTrue(Pass(NotificationKind.FarmingFinished, "first"));
+		Assert.AreEqual(5, Queued[^2].Count);
+		FillTheHour(RateLimiter.HourlyCap - RateLimiter.AsfErrorHourlyCap - 2);
+		Assert.IsFalse(Pass(NotificationKind.FarmingFinished, "over"));
+
+		// An error slot frees an hour after it was taken
+		Clock.Advance(Start + RateLimiter.CapWindow - Clock.Now);
+		Assert.IsTrue(PassError("bot1", "Method9"));
+	}
+
+	[TestMethod]
+	internal void ErrorsCannotFillTheCapLeftByOtherEvents() {
+		FillTheHour(RateLimiter.HourlyCap - 2);
+
+		Assert.IsTrue(PassError("bot1", "Method0"));
+		Assert.IsTrue(PassError("bot1", "Method1"));
+		Assert.IsFalse(PassError("bot1", "Method2"), "the overall cap still applies");
+	}
+
+	[TestMethod]
 	internal void AQueueThatRefusesIsReported() => Assert.IsFalse(Limiter.Pass(new Notification(NotificationKind.FarmingFinished, "bot1", Clock.Now), static _ => false));
 
 	// Takes count slots with distinct bots, one minute apart, starting now

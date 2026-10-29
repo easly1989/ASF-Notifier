@@ -11,6 +11,17 @@ internal sealed class BotConfigStore {
 
 	internal BotSettings? Get(string? botName) => botName == null ? null : Settings.GetValueOrDefault(botName);
 
+	// Whether an enabled bot turns this event on. Called on NLog's logging thread: the enumeration takes no lock
+	internal bool AnyEnables(NotificationKind kind) {
+		foreach (KeyValuePair<string, BotSettings> bot in Settings) {
+			if (bot.Value.Enabled && bot.Value.Events.TryGetValue(kind, out bool enabled) && enabled) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
 	internal void Remove(string botName) => Settings.TryRemove(botName, out _);
 
 	// A reload replaces the old values whole; no usable block means inheriting everything

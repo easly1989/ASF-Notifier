@@ -203,6 +203,9 @@ Applied after the filter, before the queue (`RateLimiter`):
   gets its "reconnected". The limiter tracks this itself: a passed `BotDisconnected` opens the
   bot's outage, the next passed `BotReconnected`, `BotStopped` or `BotStoppedByAsf` closes it
   (a stop ends the outage, 5.1).
+- **`AsfError` sub-cap**: at most 5 `AsfError` messages in any rolling 60 minutes. They count in
+  the hourly cap below too, so errors can never take more than 5 of its 20 slots; one over the
+  sub-cap is dropped and counted like any other drop.
 - **Hourly cap**: at most 20 messages in any rolling 60 minutes; a slot frees exactly 60
   minutes after it was taken. Beyond that, messages are dropped and counted. `BotStoppedByAsf`
   and `BotReconnected` are exempt from the cap (they are the messages that must never be
@@ -366,9 +369,10 @@ second delay on stop messages, and that stopping every bot within 10 seconds (fo
 `HandleLoginResult()` / `OnLoggedOff()` entry at any level that names an `EResult`, for the
 reason (an entry without one, such as the final "Received InvalidPassword error code … times"
 in a language that translates it, must not wipe the reason logged by the attempt before). It
-stores only time, method and the parsed `EResult`, never re-logs log text. It also hands every
-`Error` and `Fatal` entry to `AsfErrorSource` (section 5.6), deferred to the thread pool, so nothing
-is emitted or logged inside NLog's `Write`.
+stores only time, method and the parsed `EResult`, never re-logs log text. It also hands `Error`
+and `Fatal` entries to the `AsfError` forwarder (section 5.6), deferred to the thread pool, so
+nothing is emitted or logged inside NLog's `Write`; the give-up record never depends on that
+hand-off.
 
 - Registration: insert a rule from `Info` to `Fatal` for all loggers at the top of the current
   `LogManager.Configuration` (so a `final` rule in a custom `NLog.config` cannot hide entries
@@ -436,9 +440,15 @@ message elsewhere.
 
 ### 5.6 Generic ASF errors
 
-`AsfError`, off by default. The tap hands each `Error` or `Fatal` entry (logger name, formatted
-message, time, exception type and text) to the adapter on the thread pool; `AsfErrorSource` turns it
-into a notification, or nothing:
+`AsfError`, off by default. `AsfErrorForwarder` holds the adapter's glue without ASF types.
+
+- **Cheap on the logging thread.** For each `Error` or `Fatal` entry the tap first asks
+  `AsfErrorForwarder.Wanted`: the plugin is configured and the global `Events.AsfError` or an
+  enabled bot's `Events.AsfError` is on (a lock-free scan of the bot settings). Off: nothing more
+  happens. On: the tap captures references only (logger name, formatted message, time, the
+  exception object) and defers the rest; a failure in that hand-off is swallowed, so it never costs
+  the give-up record. Deferred work does not run once the tap is disposed.
+- On the thread pool, `AsfErrorSource` turns the entry into a notification, or nothing:
 
 - Only ArchiLogger's shape: `"{method}() {message}"`, or `"{method}()"` for an exception entry, with
   a method name of identifier characters. The logger is `ASF` (no bot name) or a bot of this ASF
@@ -446,14 +456,20 @@ into a notification, or nothing:
 - **No feedback loop.** Every `Error` the plugin writes carries the method name `ASFNotifier` (its
   `AsfLog` and every `LogGenericException` call pass `nameof(ASFNotifier)`), and entries with that
   method are never forwarded. A failure while forwarding is logged the same way.
-- **No token.** An entry whose message or exception text contains the access token is not
-  forwarded at all.
+- **No token.** An entry whose message or exception text (`ToString()`, read here, off the
+  logging thread) contains the access token is not forwarded at all. An exception whose text cannot
+  be read cannot be checked, so its entry is not forwarded either.
+- **No duplicate of `BotStoppedByAsf`.** For a bot whose `BotStoppedByAsf` is on (the filter's
+  answer for that bot), errors from the give-up methods of section 5.3 (`HandleLoginResult`,
+  `OnLoggedOff`, `OnLoggedOn`, `OnConnected`, `RequestInput`) are not forwarded.
 - Text: the first line after `() `, trimmed to 300 characters (299 and `…`, never half a surrogate
   pair). An exception entry has no text of its own: its exception type stands in; the exception
   message is never sent.
 - It then goes through `Emit` like every event: the filter (global `Events.AsfError`, and for a bot
   logger that bot's `Events.AsfError`), dedupe on `(AsfError, BotName, Method)` so one recurring
-  error does not drain the hourly cap, the cap, the queue.
+  error does not drain the hourly cap, the `AsfError` sub-cap of 5 an hour (4.5), the cap, the queue.
+- A test scans the plugin's sources and fails when an `Error`- or `Fatal`-level `ArchiLogger` call
+  does not pass `nameof(ASFNotifier)`, which the no-loop rule depends on.
 
 ## 6. Events
 

@@ -8,8 +8,8 @@ namespace ASFNotifier.Tests;
 internal sealed class AsfErrorSourceTests {
 	private static readonly DateTimeOffset At = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
 
-	private static Notification? From(string logger, string message, string? exceptionType = null, string? exceptionText = null) =>
-		AsfErrorSource.ToNotification(new LoggedError(logger, message, At, exceptionType, exceptionText), TestData.Token, static name => name is "bot1" or "bot2");
+	private static Notification? From(string logger, string message, Exception? exception = null, bool stopReported = false) =>
+		AsfErrorSource.ToNotification(new LoggedError(logger, message, At, exception), TestData.Token, static name => name is "bot1" or "bot2", _ => stopReported);
 
 	[TestMethod]
 	internal void ABotErrorCarriesTheBotMethodAndFirstLine() {
@@ -41,14 +41,33 @@ internal sealed class AsfErrorSourceTests {
 	[DataRow("ASFNotifier() Matrix rejected the credentials or permissions (401 M_UNKNOWN_TOKEN)", DisplayName = "The plugin's log lines")]
 	[DataRow("ASFNotifier()", DisplayName = "The plugin's exceptions")]
 	internal void ThePluginsOwnEntriesAreNeverForwarded(string message) {
-		Assert.IsNull(From("ASF", message, "InvalidOperationException"));
-		Assert.IsNull(From("bot1", message, "InvalidOperationException"));
+		Assert.IsNull(From("ASF", message, new InvalidOperationException()));
+		Assert.IsNull(From("bot1", message, new InvalidOperationException()));
 	}
 
 	[TestMethod]
 	internal void AnEntryContainingTheTokenIsNeverForwarded() {
 		Assert.IsNull(From("ASF", $"Init() bad header Bearer {TestData.Token}"));
-		Assert.IsNull(From("bot1", "OnConnected() failed", "HttpRequestException", $"System.Net.Http.HttpRequestException: {TestData.Token}\n   at Somewhere()"));
+		Assert.IsNull(From("bot1", "OnConnected() failed", new InvalidOperationException("outer", new InvalidOperationException($"inner {TestData.Token}"))));
+	}
+
+	// Its text cannot be checked for the token, so the entry stays out; reading it never throws
+	[TestMethod]
+	internal void AnExceptionWhoseTextCannotBeReadIsNotForwarded() => Assert.IsNull(From("bot1", "Start()", new UnprintableException()));
+
+	[TestMethod]
+	[DataRow("HandleLoginResult")]
+	[DataRow("OnLoggedOff")]
+	[DataRow("OnLoggedOn")]
+	[DataRow("OnConnected")]
+	[DataRow("RequestInput")]
+	internal void GiveUpErrorsAreSkippedWhileTheStopIsReported(string method) {
+		Assert.IsNull(From("bot1", $"{method}() gave up", stopReported: true));
+		Assert.IsNotNull(From("bot1", $"{method}() gave up", stopReported: false));
+
+		// Other methods of that bot, and ASF's own logger, are not give-up sites
+		Assert.IsNotNull(From("bot1", "Start() failed", stopReported: true));
+		Assert.IsNotNull(From("ASF", $"{method}() failed", stopReported: true));
 	}
 
 	[TestMethod]
@@ -66,7 +85,7 @@ internal sealed class AsfErrorSourceTests {
 
 	[TestMethod]
 	internal void AnExceptionEntryNamesTheExceptionTypeButNotItsMessage() {
-		Notification? notification = From("ASF", "OnBotDisconnected()", "InvalidOperationException", "System.InvalidOperationException: some detail");
+		Notification? notification = From("ASF", "OnBotDisconnected()", new InvalidOperationException("some detail"));
 
 		Assert.AreEqual("OnBotDisconnected", notification?.Method);
 		Assert.AreEqual("InvalidOperationException", notification?.Text);
@@ -91,5 +110,15 @@ internal sealed class AsfErrorSourceTests {
 		Assert.AreEqual(new string('x', AsfErrorSource.MaxTextLength - 2) + "…", text);
 		Assert.IsFalse(char.IsHighSurrogate(text[^2]));
 	}
+
+#pragma warning disable CA1064 // Only these tests throw and catch it
+	private sealed class UnprintableException : Exception {
+		public UnprintableException() { }
+		public UnprintableException(string message) : base(message) { }
+		public UnprintableException(string message, Exception innerException) : base(message, innerException) { }
+
+		public override string ToString() => throw new InvalidOperationException("no text");
+	}
+#pragma warning restore CA1064 // Only these tests throw and catch it
 }
 #pragma warning restore CA1812 // MSTest uses this class during runtime

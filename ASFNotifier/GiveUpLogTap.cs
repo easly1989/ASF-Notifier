@@ -17,14 +17,15 @@ internal interface IGiveUpLog {
 
 // Spec section 5.3: records, per bot logger, the latest ASF give-up error and the latest login or logged-off reason.
 // It keeps time, method and parsed EResult only; log text is never stored or logged again. With onError, it also hands
-// every Error and Fatal entry to the AsfError source (section 5.6), off the logging thread.
+// Error and Fatal entries to the AsfError forwarder (section 5.6), off the logging thread and only while wantErrors says
+// AsfError can be on.
 internal sealed class GiveUpLogTap : IDisposable, IGiveUpLog {
 	internal const string RuleName = "ASFNotifierTap";
 
 	private const string OnLoggedOff = nameof(OnLoggedOff);
 
 	// ASF's Stop() call sites that log an Error first (spec fact 3)
-	private static readonly FrozenSet<string> GiveUpMethods = new[] { StopClassifier.HandleLoginResult, OnLoggedOff, "OnLoggedOn", "OnConnected", "RequestInput" }.ToFrozenSet(StringComparer.Ordinal);
+	internal static readonly FrozenSet<string> GiveUpMethods = new[] { StopClassifier.HandleLoginResult, OnLoggedOff, "OnLoggedOn", "OnConnected", "RequestInput" }.ToFrozenSet(StringComparer.Ordinal);
 
 	private readonly Action<Action> Defer;
 	private readonly Dictionary<string, (TapEntry? GiveUpError, TapEntry? Reason)> Entries = new(StringComparer.Ordinal);
@@ -36,17 +37,20 @@ internal sealed class GiveUpLogTap : IDisposable, IGiveUpLog {
 
 	private readonly Clock Clock;
 	private readonly Action<LoggedError>? OnError;
+	private readonly Func<bool>? WantErrors;
 
 	private TapTarget? CurrentTarget;
 	private bool Disposed;
 
-	// defer is a test seam; production hands the re-registration and onError to the thread pool
-	internal GiveUpLogTap(LogFactory factory, Clock clock, Action<Action>? defer = null, Action<LoggedError>? onError = null) {
+	// defer is a test seam; production hands the re-registration and onError to the thread pool. wantErrors runs on the
+	// logging thread for each Error and Fatal entry, so it must be cheap; null means always
+	internal GiveUpLogTap(LogFactory factory, Clock clock, Action<Action>? defer = null, Action<LoggedError>? onError = null, Func<bool>? wantErrors = null) {
 		ArgumentNullException.ThrowIfNull(factory);
 
 		Factory = factory;
 		Clock = clock;
 		OnError = onError;
+		WantErrors = wantErrors;
 		// Task.Run, not ThreadPool: the trimmed ASF has no System.Threading.ThreadPool facade (issue #23)
 		Defer = defer ?? (static work => Task.Run(work));
 
@@ -97,11 +101,8 @@ internal sealed class GiveUpLogTap : IDisposable, IGiveUpLog {
 			return;
 		}
 
-		// Deferred: emitting can log (a full queue), and logging from inside NLog's Write must not happen
 		if ((OnError is { } onError) && ((level == LogLevel.Error) || (level == LogLevel.Fatal))) {
-			LoggedError error = new(loggerName, message, Clock.GetUtcNow(), exception?.GetType().Name, exception?.ToString());
-
-			Defer(() => onError(error));
+			HandOff(onError, loggerName, message, exception);
 		}
 
 		int end = message.IndexOf("() ", StringComparison.Ordinal);
@@ -166,6 +167,33 @@ internal sealed class GiveUpLogTap : IDisposable, IGiveUpLog {
 			configuration.LoggingRules.Insert(0, new LoggingRule("*", LogLevel.Info, LogLevel.Fatal, CurrentTarget) { RuleName = RuleName });
 			Factory.ReconfigExistingLoggers();
 			previous?.Dispose();
+		}
+	}
+
+	// Only references are captured here; the exception's text is read later, off the logging thread. Deferred, because
+	// emitting can log (a full queue) and logging from inside NLog's Write must not happen. A failure here is swallowed:
+	// it must never cost the give-up record the stop classification needs
+	private void HandOff(Action<LoggedError> onError, string loggerName, string message, Exception? exception) {
+		try {
+			if ((WantErrors?.Invoke() == false) || IsDisposed()) {
+				return;
+			}
+
+			LoggedError error = new(loggerName, message, Clock.GetUtcNow(), exception);
+
+			Defer(() => {
+				if (!IsDisposed()) {
+					onError(error);
+				}
+			});
+		} catch (Exception) {
+			// The target must not throw into NLog
+		}
+	}
+
+	private bool IsDisposed() {
+		lock (Lock) {
+			return Disposed;
 		}
 	}
 
