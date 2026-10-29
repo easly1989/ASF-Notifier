@@ -2,7 +2,9 @@
 # Smoke test against an official OS-specific ASF release, which is trimmed (issue #23): installs the plugin, starts
 # ASF with IPC on localhost and one disabled bot (IPC commands need a bot to run on; it never logs on), points the
 # plugin at a local fake Matrix homeserver, runs notifytest through IPC and shuts ASF down. Fails unless the plugin
-# loaded, ASF logged no error or exception, and the fake received the m.notice.
+# loaded, ASF logged no error or exception, and the fake received the m.notice. With one Matrix user allowed to run
+# commands, the fake also serves /sync with one "!version" from that user, and the plugin must answer it with an
+# m.notice reply and an audit line.
 #
 # Usage: tools/smoke/smoke.sh <unzipped-asf-release-dir> <published-plugin-dir>
 # Env: PYTHON (default python3), MATRIX_PORT (default 18008), IPC_PORT (default 12421)
@@ -23,6 +25,8 @@ matrix_port=${MATRIX_PORT:-18008}
 ipc_port=${IPC_PORT:-12421}
 ipc="http://127.0.0.1:${ipc_port}"
 token=smoke_FAKE_TOKEN_0000
+# fake_matrix.py sends one command from this user
+command_user=@smoke-admin:localhost
 work=$(mktemp -d)
 asf_pid=
 fake_pid=
@@ -90,7 +94,7 @@ echo '{ "Enabled": false }' > "$work/config/smoke.json"
 "$python" "$here/fake_matrix.py" "$matrix_port" "$work/matrix.jsonl" 2> "$work/fake.out" &
 fake_pid=$!
 
-ASF_NOTIFIER_MATRIX_ACCESS_TOKEN=$token "$exe" --no-restart --path "$(native "$work")" > "$work/asf.out" 2>&1 &
+ASF_NOTIFIER_MATRIX_ACCESS_TOKEN=$token ASF_NOTIFIER_COMMAND_USERS="${command_user}=Master" "$exe" --no-restart --path "$(native "$work")" > "$work/asf.out" 2>&1 &
 asf_pid=$!
 
 echo "Waiting for ASF's IPC on ${ipc}"
@@ -118,20 +122,41 @@ case "$reply" in
 	*) fail "unexpected notifytest reply" ;;
 esac
 
-"$python" - "$work/matrix.jsonl" "$token" <<'EOF' || fail "the fake homeserver did not get the expected message"
+# The command listener starts 10 s after ASF and answers on the next long poll
+echo "Waiting for the answer to the Matrix command"
+
+for _ in $(seq 1 60); do
+	grep -q 'm.relates_to' "$work/matrix.jsonl" 2>/dev/null && break
+	sleep 1
+done
+
+"$python" - "$work/matrix.jsonl" "$token" <<'EOF' || fail "the fake homeserver did not get the expected messages"
 import json, sys
 
 records = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8")]
-assert len(records) == 1, f"expected one request, got {len(records)}"
-record = records[0]
-assert record["path"].startswith("/_matrix/client/v3/rooms/%21smoke%3Alocalhost/send/m.room.message/"), record["path"]
-assert record["authorization"] == "Bearer " + sys.argv[2], "wrong or missing bearer token"
-body = record["body"]
-assert body["msgtype"] == "m.notice", body
-assert body["format"] == "org.matrix.custom.html", body
-assert "delivery works" in body["formatted_body"], body
-print("OK: fake homeserver got m.notice:", body["body"])
+assert len(records) == 2, f"expected two requests, got {len(records)}"
+
+for record in records:
+	assert record["path"].startswith("/_matrix/client/v3/rooms/%21smoke%3Alocalhost/send/m.room.message/"), record["path"]
+	assert record["authorization"] == "Bearer " + sys.argv[2], "wrong or missing bearer token"
+	assert record["body"]["msgtype"] == "m.notice", record["body"]
+	assert record["body"]["format"] == "org.matrix.custom.html", record["body"]
+	assert sys.argv[2] not in json.dumps(record["body"]), "the token is in a message"
+
+test = [record["body"] for record in records if "m.relates_to" not in record["body"]]
+reply = [record["body"] for record in records if "m.relates_to" in record["body"]]
+assert len(test) == 1 and "delivery works" in test[0]["formatted_body"], test
+print("OK: fake homeserver got m.notice:", test[0]["body"])
+
+# ASF answers in its own language; the bot name and the version are the same in all of them
+assert len(reply) == 1, reply
+assert reply[0]["m.relates_to"]["m.in_reply_to"]["event_id"] == "$smoke-command", reply
+assert reply[0]["body"].startswith("<smoke> ") and "6." in reply[0]["body"], reply
+print("OK: fake homeserver got the command reply:", reply[0]["body"])
 EOF
+
+grep -Eq "Matrix command from ${command_user}: VERSION .+ ran" "$work/asf.out" || fail "no audit line for the Matrix command"
+echo "OK: audit line for the Matrix command"
 
 curl -fsS --max-time 20 -X POST "${ipc}/Api/ASF/Exit" > /dev/null || fail "IPC exit failed"
 

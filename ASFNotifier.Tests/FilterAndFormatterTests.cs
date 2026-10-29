@@ -111,6 +111,24 @@ internal sealed class FilterAndFormatterTests {
 	}
 
 	[TestMethod]
+	internal void FormatterCommandReplyKeepsLinesEscapesHtmlAndCarriesTheReply() {
+		FormattedMessage message = Formatter.Format(new Notification(NotificationKind.CommandReply, null, DateTimeOffset.UnixEpoch, Text: "<bot1> Paused & idle\n<bot2> ok", InReplyTo: "$cmd", RoomId: "!commands:example.org"));
+
+		Assert.AreEqual("<bot1> Paused & idle\n<bot2> ok", message.PlainText);
+		Assert.AreEqual("&lt;bot1&gt; Paused &amp; idle<br>&lt;bot2&gt; ok", message.Html);
+		Assert.AreEqual("$cmd", message.InReplyTo);
+		Assert.AreEqual("!commands:example.org", message.RoomId);
+	}
+
+	[TestMethod]
+	internal void NotificationsOtherThanRepliesUseTheConfiguredRoomAndNoRelation() {
+		FormattedMessage message = Formatter.Format(Of(NotificationKind.FarmingFinished));
+
+		Assert.IsNull(message.RoomId);
+		Assert.IsNull(message.InReplyTo);
+	}
+
+	[TestMethod]
 	internal void GlobalDisabledDropsEverything() {
 		NotifierSettings disabled = TestData.Settings("""{"ASFNotifier": {"Enabled": false}}""");
 
@@ -132,6 +150,7 @@ internal sealed class FilterAndFormatterTests {
 	[TestMethod]
 	[DataRow(NotificationKind.Suppressed)]
 	[DataRow(NotificationKind.Test)]
+	[DataRow(NotificationKind.CommandReply)]
 	internal void NonConfigurableKindsPassWhenEnabled(NotificationKind kind) =>
 		Assert.IsTrue(Filter.Allows(Of(kind), Settings()));
 }

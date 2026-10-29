@@ -17,11 +17,15 @@ namespace ASFNotifier;
 // ASF exports every IPlugin type by convention, no [Export] attribute needed
 #pragma warning disable CA1812 // ASF uses this class during runtime
 [UsedImplicitly]
-internal sealed class ASFNotifier : IASF, IBot, IBotCardsFarmerInfo, IBotCommand2, IBotConnection, IBotModules, IDisposable, IGitHubPluginUpdates, IWatcherHost {
+internal sealed class ASFNotifier : IASF, IBot, IBotCardsFarmerInfo, IBotCommand2, IBotConnection, IBotModules, ICommandHost, IDisposable, IGitHubPluginUpdates, IWatcherHost {
+	// Spec section 9.1: the /sync position, so a restart replays no command
+	private const string SyncTokenKey = "ASFNotifier.SyncToken";
+
 	private readonly BotConfigStore BotConfigs = new();
 	private readonly StopHold Hold = new();
 	private readonly RateLimiter Limiter = new(Clock.System);
 
+	private CommandListener? Listener;
 	private IClockTimer? HoldTimer;
 	private NotifyTestCommand? NotifyTest;
 	private SendQueue? Queue;
@@ -43,6 +47,8 @@ internal sealed class ASFNotifier : IASF, IBot, IBotCardsFarmerInfo, IBotCommand
 		try {
 			// A repeated init must not leave the previous queue, tap and handlers behind
 			AppDomain.CurrentDomain.ProcessExit -= OnProcessExit;
+			Listener?.Dispose();
+			Listener = null;
 			Queue?.Dispose();
 			Queue = null;
 			Tap?.Dispose();
@@ -72,6 +78,10 @@ internal sealed class ASFNotifier : IASF, IBot, IBotCardsFarmerInfo, IBotCommand
 
 			// Last: Settings and Queue are ready for the Emit
 			CheckAsfVersion();
+
+			if (settings is { IsConfigured: true, HomeserverUrl: { } url, RoomId: { } room, AccessToken: { } accessToken }) {
+				StartCommands(settings, url, room, accessToken);
+			}
 		} catch (Exception e) {
 			ASF.ArchiLogger.LogGenericException(e);
 		}
@@ -83,6 +93,7 @@ internal sealed class ASFNotifier : IASF, IBot, IBotCardsFarmerInfo, IBotCommand
 		AppDomain.CurrentDomain.ProcessExit -= OnProcessExit;
 		Console.CancelKeyPress -= OnCancelKeyPress;
 
+		Listener?.Dispose();
 		SigInt?.Dispose();
 		SigTerm?.Dispose();
 		HoldTimer?.Dispose();
@@ -199,6 +210,31 @@ internal sealed class ASFNotifier : IASF, IBot, IBotCardsFarmerInfo, IBotCommand
 
 	internal static bool IsMasterOrHigher(EAccess access) => access >= EAccess.Master;
 
+	// Spec section 9.1: the adapter between the command listener (on its own background task) and ASF
+	string? ICommandHost.CommandPrefix => ASF.GlobalConfig != null ? ASF.GlobalConfig.CommandPrefix : GlobalConfig.DefaultCommandPrefix;
+
+	string? ICommandHost.LoadSyncToken() => ASF.GlobalDatabase?.LoadFromJsonStorage(SyncTokenKey) is { ValueKind: JsonValueKind.String } stored ? stored.GetString() : null;
+
+	bool ICommandHost.Reply(Notification reply) => Emit(reply);
+
+	// As IPC does it: the default bot runs the command, and a bot name argument targets other bots
+	async Task<CommandRun> ICommandHost.RunAsync(CommandAccess access, string command) {
+		if (DefaultBot() is not { } bot) {
+			return new CommandRun(false, null);
+		}
+
+		EAccess level = access switch {
+			CommandAccess.FamilySharing => EAccess.FamilySharing,
+			CommandAccess.Operator => EAccess.Operator,
+			CommandAccess.Master => EAccess.Master,
+			_ => EAccess.None
+		};
+
+		return new CommandRun(true, await bot.Commands.Response(level, command).ConfigureAwait(false));
+	}
+
+	void ICommandHost.SaveSyncToken(string token) => ASF.GlobalDatabase?.SaveToJsonStorage(SyncTokenKey, token);
+
 	// Disconnect timer, on a timer thread
 	bool IWatcherHost.Emit(Notification notification) {
 		bool accepted = Emit(notification);
@@ -259,7 +295,46 @@ internal sealed class ASFNotifier : IASF, IBot, IBotCardsFarmerInfo, IBotCommand
 		return Task.CompletedTask;
 	}
 
+	// Bot.GetDefaultBot is internal: ASF's DefaultBot when it exists, else the first bot by name
+	private static Bot? DefaultBot() {
+		IReadOnlyDictionary<string, Bot>? bots = Bot.BotsReadOnly;
+
+		if (bots == null) {
+			return null;
+		}
+
+		if (ASF.GlobalConfig?.DefaultBot is { Length: > 0 } name && bots.TryGetValue(name, out Bot? configured)) {
+			return configured;
+		}
+
+		Bot? first = null;
+
+		foreach (Bot bot in bots.Values) {
+			if ((first == null) || (string.CompareOrdinal(bot.BotName, first.BotName) < 0)) {
+				first = bot;
+			}
+		}
+
+		return first;
+	}
+
 	private static string? RequiredInputOf(Bot bot) => bot.RequiredInput == ASF.EUserInputType.None ? null : bot.RequiredInput.ToString();
+
+	// Spec section 9.1: off unless the environment allows at least one Matrix user
+	private void StartCommands(NotifierSettings settings, string homeserver, string roomId, string accessToken) {
+		IReadOnlyDictionary<string, CommandAccess> users = CommandAllowList.Parse(Environment.GetEnvironmentVariable(CommandAllowList.EnvironmentVariable), new AsfLog());
+
+		// Settings already logged why the command room is invalid
+		if ((users.Count == 0) || settings.CommandRoomIdInvalid) {
+			return;
+		}
+
+		string commandRoom = settings.CommandRoomId ?? roomId;
+
+		Listener = new CommandListener(new MatrixSyncClient(MatrixSyncClient.CreateHttpClient(), homeserver, accessToken, Clock.System), commandRoom, users, accessToken, this, Clock.System, new AsfLog());
+		Listener.Start();
+		ASF.ArchiLogger.LogGenericInfo($"Reading ASF commands from Matrix room {commandRoom}", nameof(ASFNotifier));
+	}
 
 	// true when accepted for sending (IWatcherHost.Emit). Stops are rate-checked when the hold releases them, so a stop
 	// the hold drops never uses a dedupe window or a slot, and a released one is checked once
@@ -311,6 +386,7 @@ internal sealed class ASFNotifier : IASF, IBot, IBotCardsFarmerInfo, IBotCommand
 
 	private void OnProcessExit(object? sender, EventArgs e) {
 		Volatile.Write(ref ShutdownRequested, 1);
+		Listener?.Dispose();
 		Queue?.Flush();
 	}
 

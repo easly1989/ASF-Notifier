@@ -244,6 +244,23 @@ internal sealed class RateLimiterTests {
 	}
 
 	[TestMethod]
+	internal void CommandRepliesAreNeverDeduped() {
+		Assert.IsTrue(Pass(NotificationKind.CommandReply, null));
+		Assert.IsTrue(Pass(NotificationKind.CommandReply, null));
+		Assert.IsTrue(Pass(NotificationKind.CommandReply, null));
+		Assert.HasCount(3, Queued);
+	}
+
+	[TestMethod]
+	internal void CommandRepliesTakeSlotsAndFollowTheCap() {
+		FillTheHour(RateLimiter.HourlyCap - 1);
+		Assert.IsTrue(Pass(NotificationKind.CommandReply, null));
+
+		Assert.IsFalse(Pass(NotificationKind.CommandReply, null));
+		Assert.IsFalse(Pass(NotificationKind.FarmingFinished, "bot2"));
+	}
+
+	[TestMethod]
 	internal void AQueueThatRefusesIsReported() => Assert.IsFalse(Limiter.Pass(new Notification(NotificationKind.FarmingFinished, "bot1", Clock.Now), static _ => false));
 
 	// Takes count slots with distinct bots, one minute apart, starting now

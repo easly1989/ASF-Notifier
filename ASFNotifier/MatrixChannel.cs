@@ -52,7 +52,10 @@ internal sealed class MatrixChannel : INotificationChannel {
 			}
 		}
 
-		using HttpRequestMessage request = new(HttpMethod.Put, new Uri($"{HomeserverUrl}/_matrix/client/v3/rooms/{Uri.EscapeDataString(RoomId)}/send/m.room.message/{Uri.EscapeDataString(transactionId)}", UriKind.Absolute)) {
+		// A command reply goes to the command room, which may not be the notification room
+		string roomId = message.RoomId ?? RoomId;
+
+		using HttpRequestMessage request = new(HttpMethod.Put, new Uri($"{HomeserverUrl}/_matrix/client/v3/rooms/{Uri.EscapeDataString(roomId)}/send/m.room.message/{Uri.EscapeDataString(transactionId)}", UriKind.Absolute)) {
 			Content = CreateBody(message)
 		};
 
@@ -70,7 +73,7 @@ internal sealed class MatrixChannel : INotificationChannel {
 
 			string responseBody = await response.Content.ReadAsStringAsync(timeout.Token).ConfigureAwait(false);
 
-			return Interpret(response, responseBody);
+			return Interpret(response, responseBody, roomId);
 		} catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested) {
 			return SendResult.Transient("timeout");
 		} catch (HttpRequestException) {
@@ -89,6 +92,17 @@ internal sealed class MatrixChannel : INotificationChannel {
 			writer.WriteString("body", message.PlainText);
 			writer.WriteString("format", "org.matrix.custom.html");
 			writer.WriteString("formatted_body", message.Html);
+
+			if (message.InReplyTo != null) {
+				writer.WritePropertyName("m.relates_to");
+				writer.WriteStartObject();
+				writer.WritePropertyName("m.in_reply_to");
+				writer.WriteStartObject();
+				writer.WriteString("event_id", message.InReplyTo);
+				writer.WriteEndObject();
+				writer.WriteEndObject();
+			}
+
 			writer.WriteEndObject();
 		}
 
@@ -99,7 +113,7 @@ internal sealed class MatrixChannel : INotificationChannel {
 	}
 
 	// Only an M_* style code is echoed, so a server that reflects the token in its error body cannot leak it
-	private static string? ReadErrorCode(JsonElement root) {
+	internal static string? ReadErrorCode(JsonElement root) {
 		if ((root.ValueKind != JsonValueKind.Object) || !root.TryGetMember("errcode", out JsonElement code) || (code.ValueKind != JsonValueKind.String)) {
 			return null;
 		}
@@ -121,7 +135,7 @@ internal sealed class MatrixChannel : INotificationChannel {
 
 	private static TimeSpan? Cap(TimeSpan delay) => delay < TimeSpan.Zero ? TimeSpan.Zero : delay > MaxRetryAfter ? MaxRetryAfter : delay;
 
-	private SendResult Interpret(HttpResponseMessage response, string responseBody) {
+	private SendResult Interpret(HttpResponseMessage response, string responseBody, string roomId) {
 		int status = (int) response.StatusCode;
 
 		if (response.IsSuccessStatusCode) {
@@ -149,11 +163,11 @@ internal sealed class MatrixChannel : INotificationChannel {
 
 		switch (response.StatusCode) {
 			case HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden:
-				EnterDegraded(error, response.StatusCode == HttpStatusCode.Forbidden);
+				EnterDegraded(error, response.StatusCode == HttpStatusCode.Forbidden ? roomId : null);
 
 				return SendResult.Dropped(error);
 			case HttpStatusCode.TooManyRequests:
-				return SendResult.RetryAfter(ReadRetryAfter(response, root), error);
+				return SendResult.RetryAfter(ReadRetryAfter(response, root, Clock), error);
 			case >= HttpStatusCode.InternalServerError:
 				return SendResult.Transient(error);
 			default:
@@ -163,7 +177,7 @@ internal sealed class MatrixChannel : INotificationChannel {
 		}
 	}
 
-	private void EnterDegraded(string error, bool includeRoom) {
+	private void EnterDegraded(string error, string? roomId) {
 		lock (Lock) {
 			LastFailure = Clock.GetUtcNow();
 
@@ -172,11 +186,11 @@ internal sealed class MatrixChannel : INotificationChannel {
 			}
 
 			Degraded = true;
-			Log.Error($"Matrix rejected the credentials or permissions ({error}{(includeRoom ? $", room {RoomId}" : "")}); notifications are dropped and delivery is retried every {DegradedRetryGap.TotalMinutes:0} minutes");
+			Log.Error($"Matrix rejected the credentials or permissions ({error}{(roomId != null ? $", room {roomId}" : "")}); notifications are dropped and delivery is retried every {DegradedRetryGap.TotalMinutes:0} minutes");
 		}
 	}
 
-	private TimeSpan? ReadRetryAfter(HttpResponseMessage response, JsonElement root) {
+	internal static TimeSpan? ReadRetryAfter(HttpResponseMessage response, JsonElement root, Clock clock) {
 		if ((root.ValueKind == JsonValueKind.Object) && root.TryGetMember("retry_after_ms", out JsonElement ms) && (ms.ValueKind == JsonValueKind.Number) && ms.TryGetDouble(out double milliseconds)) {
 			return double.IsNaN(milliseconds) ? null : TimeSpan.FromMilliseconds(Math.Min(Math.Max(milliseconds, 0), MaxRetryAfter.TotalMilliseconds));
 		}
@@ -191,7 +205,7 @@ internal sealed class MatrixChannel : INotificationChannel {
 				return Cap(TimeSpan.FromSeconds(seconds));
 			}
 
-			return DateTimeOffset.TryParseExact(value, "r", CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out DateTimeOffset date) ? Cap(date - Clock.GetUtcNow()) : null;
+			return DateTimeOffset.TryParseExact(value, "r", CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out DateTimeOffset date) ? Cap(date - clock.GetUtcNow()) : null;
 		}
 
 		return null;

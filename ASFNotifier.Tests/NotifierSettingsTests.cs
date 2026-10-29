@@ -84,12 +84,12 @@ internal sealed class NotifierSettingsTests {
 	internal void EventsMapIsParsedAndBadEntriesWarn() {
 		FakeLog log = new();
 
-		NotifierSettings settings = TestData.Settings(TestData.ConfigJson(""", "Events": {"BotStopped": true, "FarmingFinished": false, "Bogus": true, "AsfUpdated": "yes", "Test": true, "Suppressed": false}"""), TestData.Token, log);
+		NotifierSettings settings = TestData.Settings(TestData.ConfigJson(""", "Events": {"BotStopped": true, "FarmingFinished": false, "Bogus": true, "AsfUpdated": "yes", "Test": true, "Suppressed": false, "CommandReply": false}"""), TestData.Token, log);
 
 		Assert.HasCount(2, settings.Events);
 		Assert.IsTrue(settings.Events[NotificationKind.BotStopped]);
 		Assert.IsFalse(settings.Events[NotificationKind.FarmingFinished]);
-		Assert.HasCount(4, log.Warnings);
+		Assert.HasCount(5, log.Warnings);
 		Assert.IsTrue(log.Warnings.Any(static line => line.Contains("Bogus", StringComparison.Ordinal)));
 	}
 
@@ -104,6 +104,35 @@ internal sealed class NotifierSettingsTests {
 		Assert.HasCount(keys.Length, settings.Events);
 		Assert.IsFalse(settings.Events.Values.Any(static value => value));
 		Assert.IsEmpty(log.Warnings);
+	}
+
+	[TestMethod]
+	internal void CommandRoomIdIsOptional() {
+		FakeLog log = new();
+
+		NotifierSettings absent = TestData.Settings(TestData.ConfigJson(), TestData.Token, log);
+		NotifierSettings present = TestData.Settings("""{"ASFNotifier": {"Matrix": {"HomeserverUrl": "https://matrix.example.org", "RoomId": "!room:example.org", "CommandRoomId": " !commands:example.org "}}}""", TestData.Token, log);
+
+		Assert.IsNull(absent.CommandRoomId);
+		Assert.IsFalse(absent.CommandRoomIdInvalid);
+		Assert.AreEqual("!commands:example.org", present.CommandRoomId);
+		Assert.IsFalse(present.CommandRoomIdInvalid);
+		Assert.IsEmpty(log.Errors);
+	}
+
+	[TestMethod]
+	[DataRow("\"#commands:example.org\"")]
+	[DataRow("\"\"")]
+	[DataRow("42")]
+	internal void AnInvalidCommandRoomIdTurnsCommandsOffButKeepsNotifications(string value) {
+		FakeLog log = new();
+
+		NotifierSettings settings = TestData.Settings("{\"ASFNotifier\": {\"Matrix\": {\"HomeserverUrl\": \"https://matrix.example.org\", \"RoomId\": \"!room:example.org\", \"CommandRoomId\": " + value + "}}}", TestData.Token, log);
+
+		Assert.IsTrue(settings.IsConfigured);
+		Assert.IsTrue(settings.CommandRoomIdInvalid);
+		Assert.IsNull(settings.CommandRoomId);
+		StringAssert.Contains(log.Errors.Single(), "Matrix.CommandRoomId", StringComparison.Ordinal);
 	}
 
 	[TestMethod]

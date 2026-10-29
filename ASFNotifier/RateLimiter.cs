@@ -4,7 +4,8 @@ using System.Threading;
 
 namespace ASFNotifier;
 
-// Spec section 4.5: after the filter (and, for stops, the stop hold), before the queue. Test never comes here.
+// Spec section 4.5: after the filter (and, for stops, the stop hold), before the queue. Test never comes here;
+// command replies do (section 9.1).
 // Lock order: Lock is held while calling enqueue, so the summary lands right before its message; the queue never
 // calls back into the limiter, and the limiter never calls the watcher or the stop hold.
 internal sealed class RateLimiter(Clock clock) {
@@ -39,7 +40,9 @@ internal sealed class RateLimiter(Clock clock) {
 
 			(NotificationKind, string?) key = (notification.Kind, notification.BotName);
 			bool closesOutage = (notification is { Kind: NotificationKind.BotReconnected, BotName: { } bot }) && OpenOutages.Contains(bot);
-			bool deduped = !closesOutage && LastSent.TryGetValue(key, out long last) && (clock.GetElapsedTime(last, now) < DedupeWindow);
+
+			// Each command reply answers its own command; the cap still applies to them (spec section 9.1)
+			bool deduped = !closesOutage && (notification.Kind != NotificationKind.CommandReply) && LastSent.TryGetValue(key, out long last) && (clock.GetElapsedTime(last, now) < DedupeWindow);
 
 			// The messages that must never be lost; they still take a slot when there is one
 			bool exempt = notification.Kind is NotificationKind.BotStoppedByAsf or NotificationKind.BotReconnected;

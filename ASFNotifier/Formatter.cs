@@ -26,6 +26,7 @@ internal static class Formatter {
 			NotificationKind.AsfUpdated => new FormattedMessage($"⬆️ ASF updated {notification.FromVersion} → {notification.ToVersion}", $"⬆️ ASF updated {Code(notification.FromVersion ?? "")} → {Code(notification.ToVersion ?? "")}"),
 			NotificationKind.Suppressed => new FormattedMessage($"⚠️ ASF-Notifier — {Suppressed(notification.Count)} (rate limit)", $"⚠️ <b>ASF-Notifier</b> — {Suppressed(notification.Count)} (rate limit)"),
 			NotificationKind.Test => new FormattedMessage($"🧪 ASF-Notifier test from {bot} — delivery works", $"🧪 <b>ASF-Notifier</b> test from {boldBot} — delivery works"),
+			NotificationKind.CommandReply => new FormattedMessage(notification.Text ?? "", Html(notification.Text ?? "", true), notification.RoomId, notification.InReplyTo),
 			_ => throw new NotSupportedException(notification.Kind.ToString())
 		};
 	}
@@ -46,8 +47,9 @@ internal static class Formatter {
 
 	private static string Code(string value) => $"<code>{Html(value)}</code>";
 
-	// The trimmed ASF has no WebUtility (issue #23). Escapes what HTML needs; other characters pass through as they are
-	private static string Html(string value) {
+	// The trimmed ASF has no WebUtility (issue #23). Escapes what HTML needs; other characters pass through as they are.
+	// lineBreaks: a multi-line command answer keeps its lines
+	private static string Html(string value, bool lineBreaks = false) {
 		StringBuilder html = new(value.Length);
 
 		foreach (char c in value) {
@@ -57,6 +59,7 @@ internal static class Formatter {
 				'>' => "&gt;",
 				'"' => "&quot;",
 				'\'' => "&#39;",
+				'\n' when lineBreaks => "<br>",
 				_ => null
 			};
 

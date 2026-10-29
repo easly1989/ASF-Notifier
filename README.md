@@ -22,6 +22,7 @@ using ASF's own config files.
 - One plugin and one room serve **every bot** in the ASF instance.
 - A hook only enqueues; delivery runs on a background queue, so a slow homeserver never slows ASF down.
 - The Matrix access token is never logged.
+- Optional, off by default: allowed Matrix users can [run ASF commands from the room](#commands-from-the-room).
 - Matrix only, unencrypted rooms only, room ID only (no aliases). Other chat apps are reached
   through Matrix, see [Other chat apps](#other-chat-apps-telegram-discord-whatsapp-signal-slack-).
 
@@ -34,6 +35,7 @@ using ASF's own config files.
 - [Configuration](#configuration)
 - [Check that it works](#check-that-it-works)
 - [Events](#events)
+- [Commands from the room](#commands-from-the-room)
 - [Other ASF bots](#other-asf-bots)
 - [Other chat apps (Telegram, Discord, WhatsApp, Signal, Slack, ...)](#other-chat-apps-telegram-discord-whatsapp-signal-slack-)
 - [Updates](#updates)
@@ -143,6 +145,7 @@ The plugin reads one object, `ASFNotifier`, from `ASF.json` (global) and, option
 | `Matrix.HomeserverUrl` | string | none, required | `http` or `https` base URL, no credentials, query or fragment. A trailing slash is ignored. `http://` logs a warning, because the token then travels unencrypted. |
 | `Matrix.RoomId` | string | none, required | A room ID starting with `!`. Aliases are rejected. |
 | `Matrix.AccessToken` | string | none | Works, but is exposed through ASF's IPC. Use the environment variable instead ([below](#access-token)). |
+| `Matrix.CommandRoomId` | string | `RoomId` | Only for [commands from the room](#commands-from-the-room): the room they are read in. A value not starting with `!` logs an error and keeps commands off; notifications still work. |
 | `DisconnectedNotifyAfterMinutes` | int, 1 to 1440 | `5` | How long a bot stays disconnected before `BotDisconnected` is sent. Out of range logs a warning and uses `5`. |
 | `Events.<Event>` | bool | per the [event table](#events) | Overrides the default for one event. Unknown names and non-boolean values log a warning and are ignored. |
 
@@ -300,6 +303,99 @@ parentheses is left out when it is unknown.
   `BotStopped` and no disconnect message is sent.
 - Only the events above. No card drops, trades or generic ASF errors, and no channel other than
   Matrix.
+
+## Commands from the room
+
+Off by default. When you turn it on, the Matrix users you allow can run ASF commands by writing in the
+room, and ASF's answer comes back as a reply to the command. For example (example data):
+
+```text
+@alice:example.org     !status bot1
+@asf-notifier          ↳ <bot1> Bot is farming game 440 (Team Fortress 2), 3 games left.
+@alice:example.org     @asf-notifier pause bot1
+@asf-notifier          ↳ <bot1> Automatic farming has been paused!
+@alice:example.org     !2fa bot1
+@asf-notifier          ↳ This command cannot be run from Matrix.
+@mallory:example.org   !status bot1
+                       (no answer: not in the allow-list)
+```
+
+### Turn it on
+
+1. List the users who may command, with their ASF access level, in the **environment** of the ASF
+   process, like the token:
+
+   ```sh
+   ASF_NOTIFIER_COMMAND_USERS=@alice:example.org=Master,@bob:example.org=Operator
+   ```
+
+   - Comma-separated `@user:server=Level` entries. The level is one of ASF's access levels:
+     `FamilySharing`, `Operator` or `Master` (case does not matter). User IDs are case-sensitive.
+   - **`Owner` cannot be granted from Matrix.** An `Owner` entry is refused at start with an error,
+     and so is a malformed one; the other entries still apply.
+   - Empty or unset: commands from Matrix stay off.
+   - It is an environment variable, not an `ASF.json` key, because ASF's IPC serves `ASF.json`
+     verbatim (see [Access token](#access-token)). In Docker Compose add
+     `- ASF_NOTIFIER_COMMAND_USERS=${ASF_NOTIFIER_COMMAND_USERS}` to `environment:` and put the value
+     in `.env`.
+2. Optional: to read commands in another room than the notifications, set `Matrix.CommandRoomId` in
+   `ASF.json`. That room must be unencrypted too, and the bot user must be joined to it.
+3. Restart ASF. The log lists the allowed users and says `Reading ASF commands from Matrix room ...`.
+
+### Writing a command
+
+- With ASF's `CommandPrefix` (`!` by default): `!status bot1`.
+- Or mention the bot by its user name: `@asf-notifier status bot1` (the localpart or the full user ID,
+  optionally followed by `:` or `,`), also with the prefix: `@asf-notifier !status bot1`. Type the
+  mention as plain text: when a client turns it into a "pill", it sends the display name instead.
+- Only plain text messages count; notices, emotes, files, the bot's own messages and other rooms
+  are ignored.
+- Commands run on ASF's default bot, as in the IPC command box, so name the bots as usual:
+  `status ASF`, `pause bot1,bot2`.
+
+### What may run
+
+- Your level works as in Steam chat: ASF's own access checks apply, and ASF sends no answer for a
+  command above your level. Commands that need `Owner` (`exit`, `restart`, `update`, ...) never run
+  from Matrix.
+- **Always refused from Matrix**, whatever your level: `2fa`, `2fano`, `2faok` and every other
+  `2fa...` command, `input`, `encrypt`, `privacy`, and `transfer` with all its variants. They would
+  put a secret in the room or take one from it. The bot answers `This command cannot be run from
+  Matrix.` and never repeats the arguments. The check uses the command word exactly as ASF reads it,
+  so spacing, case, the mention or the prefix do not get around it.
+- Everything else follows ASF's levels, `redeem` included: a key you send stays in the room's
+  history.
+
+### Behaviour
+
+- **Starts from now.** Messages written before the first start are never run. The read position is
+  saved in ASF's database (`ASFNotifier.SyncToken`), so a restart replays nothing already read.
+- **No stale commands.** A command older than 5 minutes when the plugin reads it (written while ASF
+  or the homeserver was down) is dropped, not run.
+- **Per-user rate limit.** At most 5 commands per user in any minute; more are dropped without an
+  answer.
+- **Answers** are capped at 4000 characters and go through the same queue as notifications. They are
+  never deduped, but they count against the [hourly cap](#behaviour-worth-knowing): while the 20 slots
+  are taken, an answer is dropped like a notification.
+- **Audit.** Every recognised command logs one line, with the sender, the command word and the
+  outcome, never the arguments: `Matrix command from @alice:example.org: STATUS → ran`.
+- The plugin starts reading the room 10 seconds after ASF starts, so the bots are loaded, and runs
+  one command at a time. Homeserver errors back off (2 s doubling to 5 min; a rejected token or room
+  is retried every 10 minutes).
+
+### Security notes
+
+> **Room history.** Everyone in the room reads every command and every answer, and Matrix keeps them
+> in the room's history, which people who join later may also read, depending on the room's history
+> settings. Keep the command room private and invite-only, and never send a secret in it.
+
+- An allowed Matrix account can run ASF commands. Whoever controls that account, or its homeserver,
+  can too. Grant the lowest level that works.
+- A `CommandRoomId` shared with other people widens who reads the answers, `status` and `redeem`
+  results included.
+- The access token is never logged and never sent to the room; an answer that would contain it is
+  withheld.
+- Encrypted rooms are not supported, for commands either.
 
 ## Other ASF bots
 
@@ -514,6 +610,8 @@ Release notes are on the [Releases](https://github.com/easly1989/ASF-Notifier/re
 | Log: `Matrix rejected a notification (<status> <errcode>), it was dropped` | Another 4xx answer, such as 400, 404 or 413: the homeserver refused that one message, so it is not retried. Check the room ID and the homeserver URL; delivery of later messages is unaffected. |
 | `Test notification failed: timeout` or `network error` | The homeserver is unreachable from ASF. Check the URL and the container's network. Other failures retry with backoff (2 s doubling to 5 min). |
 | Nothing arrives, no error | Check the event is on ([table](#events)) and not turned off for that bot, that the room is unencrypted, and that the notification was not suppressed by dedupe or the cap. |
+| A command from the room gets no answer | Check that your user ID is in `ASF_NOTIFIER_COMMAND_USERS` (the start-up log lists the allowed users; IDs are case-sensitive), that you wrote in the command room, as plain text, with the prefix or the mention. Each recognised command has an audit line in ASF's log: refused (not allowed, or never from Matrix), dropped (older than 5 minutes, rate limit), or ran with no answer (your level is too low). An answer is not sent while the hourly cap is full. |
+| Log: `Matrix rejected the access token or the room for commands (403 ...)` | The bot user is not joined to the command room (check `Matrix.CommandRoomId`), or the token is wrong (401). The plugin retries every 10 minutes. |
 | Nothing arrives on Telegram, Discord, ... | The plugin only posts to Matrix. Check the message is in the Matrix room first, then the bridge ([bridges](#1-bridge-the-alerts-room-to-the-other-network)). |
 | The plugin did not update | Check [the update settings](#automatic-updates) and ASF's log, which names the plugin when it checks or skips it. In Docker, also check the container has a restart policy and a writable `plugins` mount. |
 
@@ -521,7 +619,8 @@ Release notes are on the [Releases](https://github.com/easly1989/ASF-Notifier/re
 
 See `CLAUDE.md` for the build, test and packaging commands. CI checks the plugin against ASF's trimmed
 OS-specific builds (issue #23). The trim check is necessary but not sufficient: it proves every referenced
-type and member exists, not that the code runs. The smoke test covers only the `!notifytest` happy path on linux-x64.
+type and member exists, not that the code runs. The smoke test covers only the happy paths of `!notifytest` and of one
+command from the room on linux-x64.
 The design is in [`docs/SPEC.md`](docs/SPEC.md).
 
 ## Support the project
