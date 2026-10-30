@@ -13,7 +13,8 @@ internal enum NotificationKind : byte {
 	AsfUpdated,
 	AsfError,
 	Suppressed,
-	Test
+	Test,
+	CommandReply
 }
 
 internal sealed record Notification(
@@ -29,7 +30,10 @@ internal sealed record Notification(
 	bool LoginFailed = false, // the reason came from the login result (spec section 8)
 	bool AsfGaveUp = false, // a give-up error backs this stop, so a mass stop does not drop it (spec section 5.3)
 	string? Method = null, // AsfError: the ASF method that logged the error, part of the dedupe key (spec section 5.6)
-	string? Text = null // AsfError: the first line of the entry, trimmed
+	string? Text = null, // AsfError: the first line of the entry, trimmed. CommandReply: ASF's answer, already capped (9.1)
+	string? InReplyTo = null, // CommandReply: the event ID of the command
+	string? RoomId = null // CommandReply: the command room, when it is not the notification room
 );
 
-internal sealed record FormattedMessage(string PlainText, string Html);
+// RoomId null: the configured room. InReplyTo: sent as a Matrix reply to that event
+internal sealed record FormattedMessage(string PlainText, string Html, string? RoomId = null, string? InReplyTo = null);

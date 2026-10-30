@@ -244,6 +244,36 @@ internal sealed class RateLimiterTests {
 	}
 
 	[TestMethod]
+	internal void CommandRepliesAreNeverDeduped() {
+		Assert.IsTrue(Pass(NotificationKind.CommandReply, null));
+		Assert.IsTrue(Pass(NotificationKind.CommandReply, null));
+		Assert.IsTrue(Pass(NotificationKind.CommandReply, null));
+		Assert.HasCount(3, Queued);
+	}
+
+	[TestMethod]
+	internal void CommandRepliesTakeSlotsAndFollowTheCap() {
+		FillTheHour(RateLimiter.HourlyCap - 1);
+		Assert.IsTrue(Pass(NotificationKind.CommandReply, null));
+
+		Assert.IsFalse(Pass(NotificationKind.CommandReply, null));
+		Assert.IsFalse(Pass(NotificationKind.FarmingFinished, "bot2"));
+	}
+
+	[TestMethod]
+	internal void CommandRepliesDoNotUseTheAsfErrorSubCap() {
+		for (int i = 0; i < 10; i++) {
+			Assert.IsTrue(Pass(NotificationKind.CommandReply, null), $"reply {i}");
+		}
+
+		for (int i = 0; i < RateLimiter.AsfErrorHourlyCap; i++) {
+			Assert.IsTrue(PassError("bot1", $"Method{i}"), $"error {i}");
+		}
+
+		Assert.IsFalse(PassError("bot1", "Method9"), "the sub-cap counts errors only");
+	}
+
+	[TestMethod]
 	internal void AsfErrorsAreDedupedByBotAndMethod() {
 		Assert.IsTrue(PassError("bot1", "OnConnected"));
 		Assert.IsFalse(PassError("bot1", "OnConnected"), "the same error again");

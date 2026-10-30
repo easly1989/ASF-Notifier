@@ -11,9 +11,13 @@ internal sealed class NotifierSettings {
 	private const int DefaultDisconnectedNotifyAfterMinutes = 5;
 	private const string ConfigKey = "ASFNotifier";
 
-	private static readonly Dictionary<string, NotificationKind> ConfigurableKinds = Enum.GetValues<NotificationKind>().Where(static kind => kind is not (NotificationKind.Suppressed or NotificationKind.Test)).ToDictionary(static kind => kind.ToString(), static kind => kind, StringComparer.Ordinal);
+	private static readonly Dictionary<string, NotificationKind> ConfigurableKinds = Enum.GetValues<NotificationKind>().Where(static kind => kind is not (NotificationKind.Suppressed or NotificationKind.Test or NotificationKind.CommandReply)).ToDictionary(static kind => kind.ToString(), static kind => kind, StringComparer.Ordinal);
 
 	internal string? AccessToken { get; private init; }
+
+	// Spec section 9.1: null reads commands in RoomId. Invalid keeps commands from Matrix off, notifications still work
+	internal string? CommandRoomId { get; private init; }
+	internal bool CommandRoomIdInvalid { get; private init; }
 	internal int DisconnectedNotifyAfterMinutes { get; private init; } = DefaultDisconnectedNotifyAfterMinutes;
 	internal bool Enabled { get; private init; } = true;
 	internal IReadOnlyDictionary<NotificationKind, bool> Events { get; private init; } = new Dictionary<NotificationKind, bool>();
@@ -43,11 +47,23 @@ internal sealed class NotifierSettings {
 		string? homeserver = null;
 		string? roomId = null;
 		string? jsonToken = null;
+		string? commandRoomId = null;
+		bool commandRoomIdInvalid = false;
 
 		if (block.TryGetMember("Matrix", out JsonElement matrix) && (matrix.ValueKind == JsonValueKind.Object)) {
 			homeserver = ReadString(matrix, "HomeserverUrl")?.TrimEnd('/');
 			roomId = ReadString(matrix, "RoomId");
 			jsonToken = ReadString(matrix, "AccessToken");
+
+			if (matrix.TryGetMember(nameof(CommandRoomId), out _)) {
+				commandRoomId = ReadString(matrix, nameof(CommandRoomId));
+				commandRoomIdInvalid = (commandRoomId == null) || !commandRoomId.StartsWith('!');
+
+				if (commandRoomIdInvalid) {
+					commandRoomId = null;
+					log.Error($"Invalid Matrix.{nameof(CommandRoomId)} (expected a room ID starting with '!'), commands from Matrix stay off");
+				}
+			}
 		}
 
 		bool environmentWins = !string.IsNullOrWhiteSpace(environmentToken);
@@ -115,6 +131,8 @@ internal sealed class NotifierSettings {
 
 		return new NotifierSettings {
 			AccessToken = token,
+			CommandRoomId = commandRoomId,
+			CommandRoomIdInvalid = commandRoomIdInvalid,
 			DisconnectedNotifyAfterMinutes = ReadMinutes(block, log),
 			Events = ReadEvents(block, log),
 			HomeserverUrl = homeserver,

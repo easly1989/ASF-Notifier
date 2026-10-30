@@ -23,7 +23,9 @@ Status: approved design (2026-10-27), revised after review; facts verified again
 - End-to-end encrypted rooms. The target room must accept unencrypted `m.room.message` events
   from the bot user.
 - Room aliases. The config takes a room ID (`!id:server`).
-- Commands other than `!notifytest`.
+- Commands other than `!notifytest` and the ASF commands read from the room (section 9.1).
+- Commands from other networks through bridges: they arrive as bridge puppets, and a puppet in the
+  allow-list is treated like any other Matrix user.
 
 ## 2. Platform and versions
 
@@ -142,13 +144,15 @@ destroy and recreate the bot).
 - **AsfVersionSource** (`IASF.OnASFInit`): emits `AsfUpdated` once per version change.
 - **AsfErrorSource** (the NLog tap): emits `AsfError` for ASF's own error entries (section 5.6).
 - **NotifyTestCommand** (`IBotCommand2`): builds a `Test` notification and sends it directly.
+- **CommandListener** (no hook; a background task started in `OnASFInit`): reads the command room
+  and runs ASF commands, answering with `CommandReply`. Section 9.1.
 
 ### 4.3 Event model
 
 ```csharp
 enum NotificationKind { BotStoppedByAsf, BotStopped, BotDisconnected, BotReconnected,
                         FarmingFinished, FarmingStarted, FarmingStopped, AsfUpdated,
-                        AsfError, Suppressed, Test }
+                        AsfError, Suppressed, Test, CommandReply }
 
 sealed record Notification(
     NotificationKind Kind,
@@ -162,11 +166,13 @@ sealed record Notification(
     bool LoginFailed = false,        // BotStoppedByAsf: the reason came from the login result (section 8)
     bool AsfGaveUp = false,          // BotStoppedByAsf: backed by a give-up error (section 5.3)
     string? Method = null,           // AsfError: the ASF method that logged it (section 5.6)
-    string? Text = null);            // AsfError: the entry's first line, trimmed
+    string? Text = null,             // AsfError: the entry's first line, trimmed; CommandReply: ASF's answer, capped (9.1)
+    string? InReplyTo = null,        // CommandReply: event ID of the command
+    string? RoomId = null);          // CommandReply: the command room
 ```
 
-The config key for each kind is its name (`"BotStoppedByAsf"`, …); `Suppressed` and `Test`
-are not configurable.
+The config key for each kind is its name (`"BotStoppedByAsf"`, …); `Suppressed`, `Test` and
+`CommandReply` are not configurable.
 
 ### 4.4 Filter and per-bot overrides
 
@@ -251,7 +257,7 @@ only stamps the summary.
 interface INotificationChannel {              // test seam only
     Task<SendResult> SendAsync(FormattedMessage message, string transactionId, bool bypassDegraded, CancellationToken ct);
 }
-sealed record FormattedMessage(string PlainText, string Html);
+sealed record FormattedMessage(string PlainText, string Html, string? RoomId = null, string? InReplyTo = null);
 enum SendOutcome { Sent, RetryAfter, Transient, Dropped }  // SendResult: outcome + delay + short error
 ```
 
@@ -265,9 +271,14 @@ header `Authorization: Bearer <token>`, body:
 { "msgtype": "m.notice", "body": "<plain>", "format": "org.matrix.custom.html", "formatted_body": "<html>" }
 ```
 
-`m.notice` marks the sender as a bot, so other bots do not answer it. `txnId` is a GUID made
+`m.notice` marks the sender as a bot, so other bots do not answer it. A `CommandReply` goes to its
+own `RoomId` and adds `"m.relates_to": {"m.in_reply_to": {"event_id": "<command>"}}`. `txnId` is a GUID made
 once per notification and reused on every retry, so the homeserver deduplicates a retried
 send.
+
+A `403` from a room other than `RoomId` (a separate command room, section 9.1) drops only that
+reply: one error until a reply there succeeds again, and the channel stays `Healthy`, so the command
+room cannot silence notifications.
 
 **Degraded state.** `401` and `403` put the channel in `Degraded` (section 10). While
 degraded, a send attempted less than 10 minutes after the last failed one returns `Dropped`
@@ -517,6 +528,7 @@ ASF passes unknown top-level `ASF.json` keys to `OnASFInit`. The plugin reads on
 | `Matrix.HomeserverUrl` | string | none, required | Base URL; trailing slash ignored; `http://` logs a warning. |
 | `Matrix.RoomId` | string | none, required | Room ID, not an alias. |
 | `Matrix.AccessToken` | string | `null` | Supported, but exposed through IPC; use the env var (7.3). |
+| `Matrix.CommandRoomId` | string | `RoomId` | Room the commands are read in (section 9.1). Not starting with `!` → one error, commands stay off, notifications work. |
 | `DisconnectedNotifyAfterMinutes` | int, 1–1440 | `5` | Out of range → warning, `5`. |
 | `Events.<Kind>` | bool | table in section 6 | Unknown keys are logged as a warning and ignored. |
 
@@ -555,6 +567,23 @@ container through the compose `environment:` list. The plugin logs which source 
 ("token from environment" / "token from ASF.json"), never the value. A token from `ASF.json`
 also logs the IPC exposure warning from section 11.
 
+### 7.4 Command users from the environment
+
+`ASF_NOTIFIER_COMMAND_USERS` turns on ASF commands from the room (section 9.1). Empty or unset: off,
+the default. It is read from the environment only, never from `ASF.json`, so ASF's IPC never
+serves it. Format: comma-separated `@user:server=Level` entries; the level is `FamilySharing`,
+`Operator` or `Master`, case-insensitive; the split is at the last `=`, because a localpart may
+contain one.
+
+```sh
+ASF_NOTIFIER_COMMAND_USERS=@alice:example.org=Master,@bob:example.org=Operator
+```
+
+Each bad entry is refused with one error naming its position, never its text (a token pasted into
+the wrong variable must not reach the log); the other entries still apply. Refused: `Owner` ("Owner
+cannot be granted from Matrix, the highest level is Master"), an unknown level or `None`, a malformed
+user ID, a repeated user. One info line lists the users and levels that apply.
+
 ## 8. Message formats
 
 All text is English. `body` is plain text; `formatted_body` is HTML with bot names, reasons
@@ -577,6 +606,7 @@ and versions HTML-escaped. Bot name = ASF bot name (the config file name).
 | `AsfError` (ASF) | `❗ ASF — Update(): Could not check the latest version!` | `❗ <b>ASF</b> — <code>Update()</code>: Could not check the latest version!` |
 | `Suppressed` | `⚠️ ASF-Notifier — 7 notifications suppressed (rate limit)` | `⚠️ <b>ASF-Notifier</b> — 7 notifications suppressed (rate limit)` |
 | `Test` | `🧪 ASF-Notifier test from bot1 — delivery works` | `🧪 <b>ASF-Notifier</b> test from <b>bot1</b> — delivery works` |
+| `CommandReply` | ASF's answer as is, e.g. `<bot1> ASF V6.3.10.6` | the same, HTML-escaped, line breaks as `<br>` |
 
 "Login failed" is used when the reason came from `HandleLoginResult()` or the hook. Durations:
 whole minutes below 2 hours ("1 minute", "12 minutes"), then hours and minutes ("3 h 5 min",
@@ -606,6 +636,79 @@ A reason in parentheses is omitted when unknown.
     `403 M_FORBIDDEN`, `timeout`). The error never contains the token.
   - `<bot> ASF-Notifier is not configured: missing Matrix.RoomId.` when config is incomplete.
 
+### 9.1 ASF commands from the room
+
+Decided on issue #27. Off by default; on when `ASF_NOTIFIER_COMMAND_USERS` (7.4) allows at least one
+user and the plugin is configured.
+
+- **Room.** The notification room, or `Matrix.CommandRoomId`. It must be unencrypted (section 1).
+  Only `m.room.message` events with `msgtype` `m.text` in that room count; other rooms, other event
+  and message types (notices, emotes, files) and the bot's own messages are ignored. So is any event
+  whose `content.m.relates_to` has a `rel_type` (an `m.replace` edit, a thread message, ...): it is
+  not a new message. A reply (`m.in_reply_to`, no `rel_type`) is read like any message.
+- **Syntax.** ASF's `CommandPrefix` (`!status bot1`), a mention of the bot (`@asf status bot1`, or
+  the full user ID; a trailing `:` or `,` is allowed), or both (`@asf !status bot1`). The mention
+  is matched case-insensitively against the localpart or user ID from `/account/whoami`, or against
+  the display name of a pill (`<a href="https://matrix.to/#/@asf:server">Name</a>`, the user ID
+  URL-decoded) in a `formatted_body` with `format` `org.matrix.custom.html`; the command text is
+  always read from `body`. `m.mentions` alone does not make a command: clients put the replied-to
+  sender there on every reply, so a reply to a notice would otherwise run as one. With an empty
+  `CommandPrefix`, only the mention form is a command. Anything else is chat and ignored without a
+  log line.
+- **Checks, in order.** Sender in the allow-list (else refused, no answer); a valid age of at most 5
+  minutes (dropped, no answer); the sender's rate limit, at most 5 commands in any rolling minute
+  (dropped, no answer); the deny-list (refused, answered "This command cannot be run from Matrix.",
+  arguments never echoed).
+- **Age.** `unsigned.age` (kept when negative) plus the time since the sync answer arrived, else the
+  age from `origin_server_ts`. Taken right before the command runs, so a command that waited behind
+  a slow one is judged at that moment. Invalid, so dropped: neither field, or an age below -1
+  minute (dated in the future beyond clock skew, which would otherwise stay fresh until that date).
+- **Deny-list.** Every verb starting with `2FA` or `TRANSFER`, and `INPUT`, `ENCRYPT`, `PRIVACY`,
+  whatever the sender's level. The verb is the first word of the text passed to ASF, split with
+  ASF's own `Split(Array.Empty<char>(), RemoveEmptyEntries)` and folded with `ToUpperInvariant`,
+  exactly as `Commands.Response` dispatches it; so extra or Unicode white space, case, the mention
+  and the prefix cannot get a denied command past the check. Every other command, `redeem`
+  included, follows ASF's access levels.
+- **Execution.** `Commands.Response(level, text)` on ASF's default bot (`DefaultBot`, else the first
+  bot by name), as IPC does, so ASF's own access checks apply and a bot name argument targets other
+  bots. The allow-list level maps to `EAccess`; `Owner` is never used. No bot → "ASF has no bot to
+  run the command on."; an exception → "The command failed, see the ASF log.", with only its type
+  in the audit line. An empty answer (ASF's way of refusing a low level) sends nothing. The command
+  runs on the thread pool with a 2-minute timeout; when it fires, the answer is "Still running, the
+  answer will not be posted.", ASF's work is not cancelled (its late answer or failure is dropped),
+  and the listener moves on. The deny-list covers ASF's own commands only: a command another plugin
+  adds through `OnBotCommand` runs at the sender's level.
+- **Reply.** A `CommandReply` with ASF's answer: trimmed, carriage returns removed, capped at 4000
+  characters at a whole character with "… (truncated)". It goes through `Emit`, the filter, the rate
+  limiter and the send queue like a notification: no dedupe (each reply answers its own command),
+  but it takes a slot of the hourly cap and is dropped while the cap is full. An answer that
+  contains the access token is replaced by "The answer was withheld: it contained the Matrix access
+  token."
+- **Audit.** One line per command: `Matrix command from <sender>: <VERB> → <outcome>`. Sender and
+  verb have control characters replaced and are cut at 64 characters; a verb containing the token
+  reads `[redacted]`. Never the arguments. Info for run and dropped-by-age, warning for refusals,
+  rate limits, failures and timeouts. A sender outside the allow-list is logged at most once per 10
+  minutes, and at most 16 such senders per 10 minutes; the rest are refused without a line.
+- **Sync.** A background task, started 10 seconds after `OnASFInit` (ASF registers its bots after
+  it), calls `/account/whoami`, then long-polls `GET /_matrix/client/v3/sync` (`timeout` 30 s,
+  request deadline 50 s, response capped at 1 MiB) with an inline filter: only the room, timeline
+  `types` `m.room.message`, `not_senders` the bot, `limit` 20, nothing from presence, account data,
+  ephemeral or state. The token goes in the `Authorization` header only. The listener owns the
+  sync client and its `HttpClient`, and disposes both, so a repeated `OnASFInit` leaves none behind.
+- **From now, no replay.** Without a saved position, the first sync has no `since` and `timeout`
+  0; its events are skipped. `next_batch` is saved in ASF's global database
+  (`ASFNotifier.SyncToken`, a JSON string built with `Utf8JsonWriter`, not ASF's reflection-based
+  `ToJsonElement`) before any command of that batch runs, so a crash mid-command replays
+  nothing, and only when the room's timeline had events, so an idle room causes no writes. A saved
+  position the homeserver rejects with a 4xx other than 401/403/429 is dropped with one warning
+  and the listener starts from now again.
+- **Errors.** 401/403: one error, retry every 10 minutes. 429: `retry_after_ms` (else
+  `Retry-After`, else the backoff), clamped to 1–60 s. Network errors, timeouts, 5xx and unusable
+  answers: the send queue's backoff (2 s doubling to 5 min), one warning when it starts, one info
+  line when it ends. Errors carry the status and an `M_*` code at most, as in `MatrixChannel`.
+- Commands run one at a time on the listener's task; a slow command delays the next sync by up to
+  the 2-minute timeout. A stop is checked before each command of a batch.
+
 ## 10. Error handling
 
 | Situation | Behaviour |
@@ -613,7 +716,7 @@ A reason in parentheses is omitted when unknown.
 | Hook throws | Caught in the adapter, logged with `ASF.ArchiLogger.LogGenericException`, never rethrown. |
 | Homeserver unreachable, timeout (`HttpClient.Timeout` 10 s), 5xx | `Transient`: the worker retries the same `txnId` with exponential backoff 2 s, 4 s, … capped at 5 min, until it succeeds or the channel turns degraded. New notifications wait in the queue (capacity 100, `DropOldest`). One warning when the outage starts, one info line when it ends. |
 | `429 M_LIMIT_EXCEEDED` | `RetryAfter`: wait `retry_after_ms` from the JSON body (fall back to the `Retry-After` header, then to the backoff), capped at 60 seconds, then retry the same `txnId`. |
-| `401 M_UNKNOWN_TOKEN` / `M_MISSING_TOKEN`, `403 M_FORBIDDEN` | Drop that notification and enter `Degraded` (section 4.7). While degraded, notifications are dropped; the first one at least 10 minutes after the last failure is tried again. Logged only on a state change: one error on entering `Degraded` (naming the status, `errcode` and, for 403, the room ID), one info line on returning to `Healthy`. |
+| `401 M_UNKNOWN_TOKEN` / `M_MISSING_TOKEN`, `403 M_FORBIDDEN` | Drop that notification and enter `Degraded` (section 4.7; a 403 for a command reply in another room drops only that reply). While degraded, notifications are dropped; the first one at least 10 minutes after the last failure is tried again. Logged only on a state change: one error on entering `Degraded` (naming the status, `errcode` and, for 403, the room ID), one info line on returning to `Healthy`. |
 | Other 4xx | Drop that notification, log a warning with status and `errcode`. |
 | Queue full | `DropOldest`; count drops and log at most once per minute. |
 | ASF shutdown | See 10.1. |
@@ -645,6 +748,11 @@ returns at once.
     and makes the next config save through IPC (`POST /Api/ASF` merges from that dictionary)
     delete the token from `ASF.json` on disk.
 - Per-bot keys hold no secrets.
+- **Commands from the room (9.1).** The allow-list lives in the environment, not in `ASF.json`.
+  Anyone who can read the room sees every command and answer, and Matrix keeps them in the room
+  history; so `2fa*`, `input`, `encrypt`, `privacy` and `transfer*` are refused from Matrix, a
+  `CommandRoomId` shared with other people widens who reads the answers, and a `redeem` key sent
+  in the room stays in its history. The highest level Matrix can grant is `Master`.
 - The Matrix account is a dedicated bot user with no admin rights, joined only to the alerts
   room. Rotating its token means changing the env var and restarting the container.
 - HTTPS is expected for the homeserver; an `http://` URL logs a warning (allowed for a LAN
@@ -661,7 +769,9 @@ returns at once.
   time, fake bot state), stop classifier (synthetic tap entries, shutdown flag, required
   input), the stop hold (one bot, every bot together, shutdown meanwhile), `AsfErrorSource` (shape,
   loggers, self-log and token exclusion, first line, trimming), `EResult` token
-  parsing, the `!notifytest` decision function, the send queue
+  parsing, the `!notifytest` decision function, the command allow-list, parser and deny-list (with
+  bypass attempts), the command listener against a fake homeserver (from now, saved position, age,
+  rooms, own messages, rate limits, replies, backoff, token never in any output), the send queue
   (ordering, `DropOldest`, flush bound), and `MatrixChannel` against a **fake
   `HttpMessageHandler`** that records requests and replays canned responses (200, 429 with
   `retry_after_ms`, 401, 403, 500, timeout, degraded and recovery).

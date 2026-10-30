@@ -112,6 +112,24 @@ internal sealed class FilterAndFormatterTests {
 	}
 
 	[TestMethod]
+	internal void FormatterCommandReplyKeepsLinesEscapesHtmlAndCarriesTheReply() {
+		FormattedMessage message = Formatter.Format(new Notification(NotificationKind.CommandReply, null, DateTimeOffset.UnixEpoch, Text: "<bot1> Paused & idle\n<bot2> ok", InReplyTo: "$cmd", RoomId: "!commands:example.org"));
+
+		Assert.AreEqual("<bot1> Paused & idle\n<bot2> ok", message.PlainText);
+		Assert.AreEqual("&lt;bot1&gt; Paused &amp; idle<br>&lt;bot2&gt; ok", message.Html);
+		Assert.AreEqual("$cmd", message.InReplyTo);
+		Assert.AreEqual("!commands:example.org", message.RoomId);
+	}
+
+	[TestMethod]
+	internal void NotificationsOtherThanRepliesUseTheConfiguredRoomAndNoRelation() {
+		FormattedMessage message = Formatter.Format(Of(NotificationKind.FarmingFinished));
+
+		Assert.IsNull(message.RoomId);
+		Assert.IsNull(message.InReplyTo);
+	}
+
+	[TestMethod]
 	[DataRow("bot1", "OnConnected", "SteamLogin is invalid!", "❗ bot1 — OnConnected(): SteamLogin is invalid!", "❗ <b>bot1</b> — <code>OnConnected()</code>: SteamLogin is invalid!", DisplayName = "Bot error")]
 	[DataRow(null, "Update", "Could not check", "❗ ASF — Update(): Could not check", "❗ <b>ASF</b> — <code>Update()</code>: Could not check", DisplayName = "ASF error")]
 	[DataRow("a<b>", "Start", "x < y & \"z\"", "❗ a<b> — Start(): x < y & \"z\"", "❗ <b>a&lt;b&gt;</b> — <code>Start()</code>: x &lt; y &amp; &quot;z&quot;", DisplayName = "Escaped in HTML only")]
@@ -144,6 +162,7 @@ internal sealed class FilterAndFormatterTests {
 	[TestMethod]
 	[DataRow(NotificationKind.Suppressed)]
 	[DataRow(NotificationKind.Test)]
+	[DataRow(NotificationKind.CommandReply)]
 	internal void NonConfigurableKindsPassWhenEnabled(NotificationKind kind) =>
 		Assert.IsTrue(Filter.Allows(Of(kind), Settings()));
 }
