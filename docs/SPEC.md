@@ -673,11 +673,15 @@ user and the plugin is configured.
   bot by name), as IPC does, so ASF's own access checks apply and a bot name argument targets other
   bots. The allow-list level maps to `EAccess`; `Owner` is never used. No bot → "ASF has no bot to
   run the command on."; an exception → "The command failed, see the ASF log.", with only its type
-  in the audit line. An empty answer (ASF's way of refusing a low level, or an unknown bot name) sends the hint "No answer from ASF: check the bot name, or your access level may be too low for this command." through the same reply path (cap and redaction included); the audit says `ran, no answer (hint sent)`, or `ran, no answer, reply not sent` when the hourly cap blocked it. The command
-  runs on the thread pool with a 2-minute timeout; when it fires, the answer is "Still running, the
-  answer will not be posted.", ASF's work is not cancelled (its late answer or failure is dropped),
-  and the listener moves on. The deny-list covers ASF's own commands only: a command another plugin
-  adds through `OnBotCommand` runs at the sender's level.
+  in the audit line. An empty answer (ASF's way of refusing a low level, or an unknown bot name)
+  sends the hint "No answer from ASF: check the bot name, or your access level may be too low for
+  this command." through the same reply path (cap and redaction included); the audit says
+  `ran, no answer (hint sent)`, or `ran, no answer, reply not sent` when the reply was not accepted,
+  for example because the hourly cap is full. The command runs on the thread pool with a 2-minute
+  timeout; when it fires, the answer is "Still running, the answer will not be posted.", ASF's work
+  is not cancelled (its late answer or failure is dropped), and the listener moves on. The deny-list
+  covers ASF's own commands only: a command another plugin adds through `OnBotCommand` runs at the
+  sender's level.
 - **Reply.** A `CommandReply` with ASF's answer: trimmed, carriage returns removed, capped at 4000
   characters at a whole character with "… (truncated)". It goes through `Emit`, the filter, the rate
   limiter and the send queue like a notification: no dedupe (each reply answers its own command),
