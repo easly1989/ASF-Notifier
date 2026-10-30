@@ -25,6 +25,7 @@ internal sealed class MatrixChannel : INotificationChannel {
 	private readonly string RoomId;
 	private readonly Clock Clock;
 
+	private bool CommandRoomRefused;
 	private bool Degraded;
 	private DateTimeOffset LastFailure;
 
@@ -140,6 +141,10 @@ internal sealed class MatrixChannel : INotificationChannel {
 
 		if (response.IsSuccessStatusCode) {
 			lock (Lock) {
+				if (roomId != RoomId) {
+					CommandRoomRefused = false;
+				}
+
 				if (Degraded) {
 					Degraded = false;
 					Log.Info("Matrix delivery works again");
@@ -162,6 +167,16 @@ internal sealed class MatrixChannel : INotificationChannel {
 		string error = errorCode == null ? status.ToString(CultureInfo.InvariantCulture) : $"{status} {errorCode}";
 
 		switch (response.StatusCode) {
+			case HttpStatusCode.Forbidden when roomId != RoomId:
+				// Only the command room refuses: that reply is dropped, notifications go on
+				lock (Lock) {
+					if (!CommandRoomRefused) {
+						CommandRoomRefused = true;
+						Log.Error($"Matrix refused a command reply ({error}, room {roomId}); replies there are dropped, notifications are not affected");
+					}
+				}
+
+				return SendResult.Dropped(error);
 			case HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden:
 				EnterDegraded(error, response.StatusCode == HttpStatusCode.Forbidden ? roomId : null);
 

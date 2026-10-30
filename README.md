@@ -346,10 +346,12 @@ room, and ASF's answer comes back as a reply to the command. For example (exampl
 
 - With ASF's `CommandPrefix` (`!` by default): `!status bot1`.
 - Or mention the bot by its user name: `@asf-notifier status bot1` (the localpart or the full user ID,
-  optionally followed by `:` or `,`), also with the prefix: `@asf-notifier !status bot1`. Type the
-  mention as plain text: when a client turns it into a "pill", it sends the display name instead.
+  optionally followed by `:` or `,`), also with the prefix: `@asf-notifier !status bot1`. A mention
+  your client turns into a "pill" works too: the message must start with it, as in
+  `ASF Notifier: status bot1`.
 - Only plain text messages count; notices, emotes, files, the bot's own messages and other rooms
-  are ignored.
+  are ignored. Editing a message does not run it again, and neither do thread messages. A reply
+  counts only when it starts with the prefix or the mention: replying to a notice is not a command.
 - Commands run on ASF's default bot, as in the IPC command box, so name the bots as usual:
   `status ASF`, `pause bot1,bot2`.
 
@@ -365,23 +367,33 @@ room, and ASF's answer comes back as a reply to the command. For example (exampl
   so spacing, case, the mention or the prefix do not get around it.
 - Everything else follows ASF's levels, `redeem` included: a key you send stays in the room's
   history.
+- **Other plugins' commands are not on that list.** A command another ASF plugin adds (through
+  ASF's `OnBotCommand`) runs from Matrix like any other, at your level, even when it handles a
+  secret. Check what your plugins add before you grant a level that reaches them.
 
 ### Behaviour
 
 - **Starts from now.** Messages written before the first start are never run. The read position is
   saved in ASF's database (`ASFNotifier.SyncToken`), so a restart replays nothing already read.
-- **No stale commands.** A command older than 5 minutes when the plugin reads it (written while ASF
-  or the homeserver was down) is dropped, not run.
+- **No stale commands.** A command older than 5 minutes when it would run (written while ASF or the
+  homeserver was down, or waiting behind a slow command) is dropped, not run. So is one dated more
+  than a minute in the future, which a wrong clock on a remote server can cause.
 - **Per-user rate limit.** At most 5 commands per user in any minute; more are dropped without an
   answer.
+- **Slow commands.** A command still running after 2 minutes gets the answer `Still running, the
+  answer will not be posted.` ASF finishes it anyway, and the next command runs.
 - **Answers** are capped at 4000 characters and go through the same queue as notifications. They are
   never deduped, but they count against the [hourly cap](#behaviour-worth-knowing): while the 20 slots
   are taken, an answer is dropped like a notification.
 - **Audit.** Every recognised command logs one line, with the sender, the command word and the
-  outcome, never the arguments: `Matrix command from @alice:example.org: STATUS → ran`.
+  outcome, never the arguments: `Matrix command from @alice:example.org: STATUS → ran`. A sender
+  outside the allow-list is logged once every 10 minutes, and at most 16 such senders in that time,
+  so strangers cannot flood the log.
 - The plugin starts reading the room 10 seconds after ASF starts, so the bots are loaded, and runs
   one command at a time. Homeserver errors back off (2 s doubling to 5 min; a rejected token or room
   is retried every 10 minutes).
+- If a separate `CommandRoomId` refuses the bot's answers (403), the answers are dropped with one
+  error in the log; notifications to the main room go on.
 
 ### Security notes
 
@@ -610,7 +622,7 @@ Release notes are on the [Releases](https://github.com/easly1989/ASF-Notifier/re
 | Log: `Matrix rejected a notification (<status> <errcode>), it was dropped` | Another 4xx answer, such as 400, 404 or 413: the homeserver refused that one message, so it is not retried. Check the room ID and the homeserver URL; delivery of later messages is unaffected. |
 | `Test notification failed: timeout` or `network error` | The homeserver is unreachable from ASF. Check the URL and the container's network. Other failures retry with backoff (2 s doubling to 5 min). |
 | Nothing arrives, no error | Check the event is on ([table](#events)) and not turned off for that bot, that the room is unencrypted, and that the notification was not suppressed by dedupe or the cap. |
-| A command from the room gets no answer | Check that your user ID is in `ASF_NOTIFIER_COMMAND_USERS` (the start-up log lists the allowed users; IDs are case-sensitive), that you wrote in the command room, as plain text, with the prefix or the mention. Each recognised command has an audit line in ASF's log: refused (not allowed, or never from Matrix), dropped (older than 5 minutes, rate limit), or ran with no answer (your level is too low). An answer is not sent while the hourly cap is full. |
+| A command from the room gets no answer | Check that your user ID is in `ASF_NOTIFIER_COMMAND_USERS` (the start-up log lists the allowed users; IDs are case-sensitive), that you wrote in the command room, as plain text, with the prefix or the mention. Each recognised command has an audit line in ASF's log: refused (not allowed, or never from Matrix), dropped (older than 5 minutes or dated in the future, rate limit), or ran with no answer (your level is too low). An answer is not sent while the hourly cap is full. |
 | Log: `Matrix rejected the access token or the room for commands (403 ...)` | The bot user is not joined to the command room (check `Matrix.CommandRoomId`), or the token is wrong (401). The plugin retries every 10 minutes. |
 | Nothing arrives on Telegram, Discord, ... | The plugin only posts to Matrix. Check the message is in the Matrix room first, then the bridge ([bridges](#1-bridge-the-alerts-room-to-the-other-network)). |
 | The plugin did not update | Check [the update settings](#automatic-updates) and ASF's log, which names the plugin when it checks or skips it. In Docker, also check the container has a restart policy and a writable `plugins` mount. |

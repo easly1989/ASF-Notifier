@@ -39,6 +39,32 @@ internal sealed class CommandParserTests {
 	[DataRow("", DisplayName = "Empty")]
 	internal void NotACommand(string body) => Assert.IsNull(CommandParser.Parse(body, "!", BotUserId));
 
+	private const string Pill = "<a href=\"https://matrix.to/#/@asf:example.org\">ASF Bot</a>";
+
+	// A client turns a mention into a pill and puts its display name in body; the name comes from the pill, the command
+	// text from body
+	[TestMethod]
+	[DataRow("ASF Bot: status bot1", Pill + ": status bot1", "status bot1", DisplayName = "Pill and colon")]
+	[DataRow("asf bot !pause bot1", Pill + " !pause bot1", "pause bot1", DisplayName = "Pill and prefix, any case")]
+	[DataRow("ASF Bot status", Pill + " <b>status</b>", "status", DisplayName = "Markup after the pill")]
+	internal void APillToTheBotIsAMention(string body, string formattedBody, string text) => Assert.AreEqual(text, CommandParser.Parse(body, "!", BotUserId, formattedBody)?.Text);
+
+	[TestMethod]
+	[DataRow("ASF Bot: status", "<a href=\"https://matrix.to/#/@alice:example.org\">ASF Bot</a>: status", DisplayName = "Pill to another user")]
+	[DataRow("Hi ASF Bot: status", "Hi " + Pill + ": status", DisplayName = "Pill not first")]
+	[DataRow("ASF Botty status", Pill + "ty status", DisplayName = "Name followed by more letters")]
+	[DataRow("ASF Bot: status", null, DisplayName = "No formatted body")]
+	internal void NotAPillMention(string body, string? formattedBody) => Assert.IsNull(CommandParser.Parse(body, "!", BotUserId, formattedBody));
+
+	[TestMethod]
+	[DataRow(Pill, "ASF Bot", DisplayName = "Plain")]
+	[DataRow("<a href='https://matrix.to/#/%40asf%3Aexample.org?via=example.org'>ASF Bot</a>", "ASF Bot", DisplayName = "Encoded, single quotes, via")]
+	[DataRow("<a href=\"https://matrix.to/#/@alice:example.org\">Alice</a> and <a href=\"https://matrix.to/#/@ASF:example.org\"> A &amp; B </a>", "A & B", DisplayName = "Second pill, entity, case")]
+	[DataRow("<a href=\"https://matrix.to/#/@alice:example.org\">Alice</a>", null, DisplayName = "Another user")]
+	[DataRow("<a href=\"https://matrix.to/#/@asf:example.org", null, DisplayName = "Cut off")]
+	[DataRow("plain text", null, DisplayName = "No pill")]
+	internal void PillTextIsTheBotsDisplayName(string formattedBody, string? text) => Assert.AreEqual(text, CommandParser.PillText(formattedBody, BotUserId));
+
 	[TestMethod]
 	internal void WithoutAPrefixOnlyTheMentionCounts() {
 		Assert.IsNull(CommandParser.Parse("!status", null, BotUserId));

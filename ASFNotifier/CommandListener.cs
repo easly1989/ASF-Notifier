@@ -29,10 +29,14 @@ internal interface ICommandHost {
 // Nothing here runs inside an ASF hook
 internal sealed class CommandListener : IDisposable {
 	internal const int MaxReplyLength = 4000;
+	internal const int RefusedSenderLimit = 16;
 	internal const int SenderLimit = 5;
+	internal static readonly TimeSpan CommandTimeout = TimeSpan.FromMinutes(2);
+	internal static readonly TimeSpan MaxClockSkew = TimeSpan.FromMinutes(1);
 	internal static readonly TimeSpan MaxCommandAge = TimeSpan.FromMinutes(5);
 	internal static readonly TimeSpan MinRetryAfter = TimeSpan.FromSeconds(1);
 	internal static readonly TimeSpan PollTimeout = TimeSpan.FromSeconds(30);
+	internal static readonly TimeSpan RefusedLogWindow = TimeSpan.FromMinutes(10);
 	internal static readonly TimeSpan SenderWindow = TimeSpan.FromMinutes(1);
 	internal static readonly TimeSpan UnauthorizedRetry = TimeSpan.FromMinutes(10);
 
@@ -48,6 +52,7 @@ internal sealed class CommandListener : IDisposable {
 	private readonly Func<TimeSpan, CancellationToken, Task> Delay;
 	private readonly INotifierLog Log;
 	private readonly ICommandHost Host;
+	private readonly Dictionary<string, long> RefusedLogged = new(StringComparer.Ordinal);
 	private readonly string RoomId;
 	private readonly Dictionary<string, Queue<long>> SenderSlots = new(StringComparer.Ordinal);
 	private readonly CancellationTokenSource Stop = new();
@@ -79,13 +84,16 @@ internal sealed class CommandListener : IDisposable {
 			_ = Stop.CancelAsync();
 		}
 
+		// Cancelled first, so the loop treats the aborted poll as the stop it is
+		Client.Dispose();
+
 		if (Worker?.IsCompleted != false) {
 			Stop.Dispose();
 		}
 	}
 
-	// One message of the room; never throws for a bad message
-	internal async Task HandleAsync(RoomMessage message) {
+	// One message of the room, read at the received timestamp; never throws for a bad message, only when cancelled
+	internal async Task HandleAsync(RoomMessage message, long received, CancellationToken cancellationToken) {
 		ArgumentNullException.ThrowIfNull(message);
 
 		// The bot's own notices and replies, and anything that is not plain text (emotes, files, notices of other bots)
@@ -93,18 +101,27 @@ internal sealed class CommandListener : IDisposable {
 			return;
 		}
 
-		if (CommandParser.Parse(message.Body, Host.CommandPrefix, BotUserId) is not { } command) {
+		if (CommandParser.Parse(message.Body, Host.CommandPrefix, BotUserId, message.FormattedBody) is not { } command) {
 			return;
 		}
 
 		if (!Users.TryGetValue(message.Sender, out CommandAccess access)) {
-			Audit(message, command, "refused, sender not in the allow-list", true);
+			if (TakeRefusedLogSlot(message.Sender)) {
+				Audit(message, command, $"refused, sender not in the allow-list (not logged again for {RefusedLogWindow.TotalMinutes:0} minutes)", true);
+			}
 
 			return;
 		}
 
-		// After an outage or a restart: what was asked minutes ago may no longer be wanted
-		if (AgeOf(message) is not { } age || (age > MaxCommandAge)) {
+		// After an outage, a restart or a slow command before it: what was asked minutes ago may no longer be wanted.
+		// Nothing awaits between this check and the run, so it is the age the command runs at
+		if (AgeOf(message, received) is not { } age) {
+			Audit(message, command, "dropped, no valid age (unknown or dated in the future)");
+
+			return;
+		}
+
+		if (age > MaxCommandAge) {
 			Audit(message, command, $"dropped, older than {MaxCommandAge.TotalMinutes:0} minutes");
 
 			return;
@@ -123,10 +140,35 @@ internal sealed class CommandListener : IDisposable {
 			return;
 		}
 
+		// On the thread pool, so a command that blocks before its first await is bounded by the timeout too
+		Task<CommandRun> running = Task.Run(() => Host.RunAsync(access, command.Text), CancellationToken.None);
+
+		Task finished;
+
+		using (CancellationTokenSource timer = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken)) {
+#pragma warning disable CA2025 // The delay only listens to the token, and it is cancelled before the source is disposed
+			finished = await Task.WhenAny(running, Delay(CommandTimeout, timer.Token)).ConfigureAwait(false);
+#pragma warning restore CA2025 // The delay only listens to the token, and it is cancelled before the source is disposed
+			await timer.CancelAsync().ConfigureAwait(false);
+		}
+
+		if (finished != running) {
+			cancellationToken.ThrowIfCancellationRequested();
+
+			// ASF's work is not cancelled; its answer is dropped when it comes, and the next command goes on
+#pragma warning disable CA2025 // The command uses none of this method's disposables
+			_ = Abandon(running);
+#pragma warning restore CA2025 // The command uses none of this method's disposables
+			bool sent = Reply(message, "Still running, the answer will not be posted.");
+			Audit(message, command, $"still running after {CommandTimeout.TotalMinutes:0} minutes, answer not posted" + (sent ? "" : ", reply not sent"), true);
+
+			return;
+		}
+
 		CommandRun run;
 
 		try {
-			run = await Host.RunAsync(access, command.Text).ConfigureAwait(false);
+			run = await running.ConfigureAwait(false);
 		} catch (Exception e) {
 			bool sent = Reply(message, "The command failed, see the ASF log.");
 			Audit(message, command, $"failed ({e.GetType().Name})" + (sent ? "" : ", reply not sent"), true);
@@ -183,6 +225,7 @@ internal sealed class CommandListener : IDisposable {
 			return Failed(sync);
 		}
 
+		long received = Clock.GetTimestamp();
 		Recovered();
 		Since = sync.NextBatch;
 
@@ -194,9 +237,11 @@ internal sealed class CommandListener : IDisposable {
 		// The first sync only finds the position: commands start from now
 		if (!initial) {
 			foreach (RoomMessage message in sync.Messages) {
+				cancellationToken.ThrowIfCancellationRequested();
+
 				try {
-					await HandleAsync(message).ConfigureAwait(false);
-				} catch (Exception e) {
+					await HandleAsync(message, received, cancellationToken).ConfigureAwait(false);
+				} catch (Exception e) when (!cancellationToken.IsCancellationRequested) {
 					// One bad message must not cost the rest of the batch, whose position is already saved
 					LogUnexpected(e);
 				}
@@ -242,17 +287,30 @@ internal sealed class CommandListener : IDisposable {
 		return clean.ToString();
 	}
 
-	// unsigned.age is the homeserver's own count, immune to clock skew; origin_server_ts is the fallback. Unknown: too old
-	private TimeSpan? AgeOf(RoomMessage message) {
-		if (message.Age is { } age) {
-			return age;
+	// Not awaited, so ASF's work goes on; a late failure must not surface as an unobserved task exception
+	private static async Task Abandon(Task<CommandRun> running) {
+		try {
+			await running.ConfigureAwait(false);
+		} catch (Exception) {
+			// Dropped with its answer
 		}
+	}
 
-		if (message.OriginServerTs is not { } sent) {
+	// unsigned.age is the homeserver's own count at the sync, immune to clock skew, plus the time since; origin_server_ts
+	// is the fallback. null, so dropped: unknown, or dated more than MaxClockSkew in the future, which would otherwise
+	// pass the age limit for as long as the date lies ahead
+	private TimeSpan? AgeOf(RoomMessage message, long received) {
+		TimeSpan? age = message.Age is { } reported ? reported + Clock.GetElapsedTime(received, Clock.GetTimestamp()) : OriginAge(message.OriginServerTs);
+
+		return age < -MaxClockSkew ? null : age;
+	}
+
+	private TimeSpan? OriginAge(double? sent) {
+		if (sent is not { } milliseconds) {
 			return null;
 		}
 
-		double seconds = Clock.GetUtcNow().ToUnixTimeSeconds() - Math.Floor(sent / 1000);
+		double seconds = Clock.GetUtcNow().ToUnixTimeSeconds() - Math.Floor(milliseconds / 1000);
 
 		// A timestamp TimeSpan cannot hold is nonsense
 		return Math.Abs(seconds) < 1e9 ? TimeSpan.FromSeconds(seconds) : null;
@@ -338,7 +396,8 @@ internal sealed class CommandListener : IDisposable {
 
 			try {
 				wait = await PollOnceAsync(token).ConfigureAwait(false);
-			} catch (OperationCanceledException) when (token.IsCancellationRequested) {
+			} catch (Exception) when (token.IsCancellationRequested) {
+				// Stopping: the aborted poll may also end with the disposed HttpClient's exception
 				return;
 			} catch (Exception e) {
 				LogUnexpected(e);
@@ -355,6 +414,26 @@ internal sealed class CommandListener : IDisposable {
 				return;
 			}
 		}
+	}
+
+	// A refused sender is logged once per RefusedLogWindow, and at most RefusedSenderLimit senders per window, so
+	// strangers cannot flood ASF's log
+	private bool TakeRefusedLogSlot(string sender) {
+		long now = Clock.GetTimestamp();
+
+		foreach (KeyValuePair<string, long> logged in RefusedLogged) {
+			if (Clock.GetElapsedTime(logged.Value, now) >= RefusedLogWindow) {
+				RefusedLogged.Remove(logged.Key);
+			}
+		}
+
+		if (RefusedLogged.ContainsKey(sender) || (RefusedLogged.Count >= RefusedSenderLimit)) {
+			return false;
+		}
+
+		RefusedLogged[sender] = now;
+
+		return true;
 	}
 
 	// Per sender, at most SenderLimit commands in any rolling SenderWindow

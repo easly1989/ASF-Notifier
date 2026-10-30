@@ -20,8 +20,9 @@ internal enum SyncOutcome : byte {
 	Rejected
 }
 
-// One m.room.message of the command room. Age: unsigned.age from the homeserver; OriginServerTs in milliseconds
-internal sealed record RoomMessage(string EventId, string Sender, string MsgType, string Body, TimeSpan? Age = null, double? OriginServerTs = null);
+// One m.room.message of the command room. Age: unsigned.age from the homeserver, negative when the event is dated in
+// the future; OriginServerTs in milliseconds; FormattedBody: the HTML body, for mention pills
+internal sealed record RoomMessage(string EventId, string Sender, string MsgType, string Body, TimeSpan? Age = null, double? OriginServerTs = null, string? FormattedBody = null);
 
 internal sealed record SyncResult(SyncOutcome Outcome, string? Error = null, TimeSpan? Delay = null) {
 	// Events of the room's timeline after the filter, of any type; zero means nothing new happened in the room
@@ -34,7 +35,7 @@ internal sealed record SyncResult(SyncOutcome Outcome, string? Error = null, Tim
 
 // Spec section 9.1: reads the command room with /sync. Like MatrixChannel, it never puts the token anywhere but the
 // Authorization header, and its errors are a status and an M_* code at most
-internal sealed class MatrixSyncClient {
+internal sealed class MatrixSyncClient : IDisposable {
 	internal const int MaxResponseBytes = 1024 * 1024;
 	internal const int TimelineLimit = 20;
 	internal static readonly TimeSpan RequestSlack = TimeSpan.FromSeconds(20);
@@ -50,6 +51,9 @@ internal sealed class MatrixSyncClient {
 		AccessToken = accessToken;
 		Clock = clock;
 	}
+
+	// Owns the HttpClient: a repeated OnASFInit disposes the listener, and with it this
+	public void Dispose() => HttpClient.Dispose();
 
 	// The long poll outlasts MatrixChannel's 10 seconds; each request has its own deadline. No logging handler, on purpose
 	internal static HttpClient CreateHttpClient(HttpMessageHandler? handler = null) => handler == null ? new HttpClient { Timeout = TimeSpan.FromMinutes(2) } : new HttpClient(handler, false) { Timeout = TimeSpan.FromMinutes(2) };
@@ -123,9 +127,17 @@ internal sealed class MatrixSyncClient {
 					continue;
 				}
 
-				double? age = ReadNumber(Member(item, "unsigned"), "age");
+				// An edit (m.replace), a thread message or any other relation is not a new command; a reply has no rel_type
+				if (Member(Member(content, "m.relates_to"), "rel_type") != null) {
+					continue;
+				}
 
-				messages.Add(new RoomMessage(eventId, sender, msgType, body, age is >= 0 and <= 1e12 ? TimeSpan.FromMilliseconds(age.Value) : null, ReadNumber(item, "origin_server_ts")));
+				// Kept even when negative (dated in the future), so the listener can refuse it rather than fall back to
+				// origin_server_ts; clamped to what TimeSpan holds (by hand: the trimmed ASF has no Math.Clamp(double), issue #23)
+				double? age = ReadNumber(Member(item, "unsigned"), "age");
+				string? formattedBody = ReadString(content, "format") == "org.matrix.custom.html" ? ReadString(content, "formatted_body") : null;
+
+				messages.Add(new RoomMessage(eventId, sender, msgType, body, age == null ? null : TimeSpan.FromMilliseconds(Math.Min(Math.Max(age.Value, -1e12), 1e12)), ReadNumber(item, "origin_server_ts"), formattedBody));
 			}
 		}
 

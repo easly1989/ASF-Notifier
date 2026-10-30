@@ -112,15 +112,33 @@ internal sealed class MatrixChannelTests {
 		Assert.IsFalse(body.RootElement.TryGetProperty("m.relates_to", out _));
 	}
 
+	// The command room refusing the bot must not silence the notification room
 	[TestMethod]
-	internal async Task AForbiddenReplyNamesTheRoomItWasSentTo() {
+	internal async Task AForbiddenCommandRoomDropsTheReplyButNotTheNotifications() {
 		using Rig rig = new();
 		(MatrixChannel channel, FakeHandler handler, FakeLog log, _) = rig;
+		FormattedMessage reply = new("ok", "ok", "!commands:example.org", "$cmd");
 		handler.Enqueue(HttpStatusCode.Forbidden, """{"errcode": "M_FORBIDDEN"}""");
+		handler.Enqueue(HttpStatusCode.Forbidden, """{"errcode": "M_FORBIDDEN"}""");
+		handler.Enqueue(HttpStatusCode.OK);
 
-		await channel.SendAsync(new FormattedMessage("ok", "ok", "!commands:example.org", "$cmd"), "txn1", false, CancellationToken.None).ConfigureAwait(false);
+		SendResult refused = await channel.SendAsync(reply, "txn1", false, CancellationToken.None).ConfigureAwait(false);
+		await channel.SendAsync(reply, "txn2", false, CancellationToken.None).ConfigureAwait(false);
+		SendResult notification = await Send(channel).ConfigureAwait(false);
 
+		Assert.AreEqual(SendOutcome.Dropped, refused.Outcome);
+		Assert.AreEqual("403 M_FORBIDDEN", refused.Error);
+		Assert.AreEqual(SendOutcome.Sent, notification.Outcome);
+		Assert.HasCount(3, handler.Requests);
 		StringAssert.Contains(log.Errors.Single(), "room !commands:example.org", StringComparison.Ordinal);
+		Assert.IsEmpty(log.Infos);
+
+		// Once a reply gets through, a later refusal is logged again
+		handler.Enqueue(HttpStatusCode.OK);
+		handler.Enqueue(HttpStatusCode.Forbidden, """{"errcode": "M_FORBIDDEN"}""");
+		await channel.SendAsync(reply, "txn3", false, CancellationToken.None).ConfigureAwait(false);
+		await channel.SendAsync(reply, "txn4", false, CancellationToken.None).ConfigureAwait(false);
+		Assert.HasCount(2, log.Errors);
 	}
 
 	[TestMethod]

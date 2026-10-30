@@ -271,6 +271,10 @@ own `RoomId` and adds `"m.relates_to": {"m.in_reply_to": {"event_id": "<command>
 once per notification and reused on every retry, so the homeserver deduplicates a retried
 send.
 
+A `403` from a room other than `RoomId` (a separate command room, section 9.1) drops only that
+reply: one error until a reply there succeeds again, and the channel stays `Healthy`, so the command
+room cannot silence notifications.
+
 **Degraded state.** `401` and `403` put the channel in `Degraded` (section 10). While
 degraded, a send attempted less than 10 minutes after the last failed one returns `Dropped`
 without a request; the first send after 10 minutes is tried normally. A success returns the
@@ -595,16 +599,26 @@ user and the plugin is configured.
 
 - **Room.** The notification room, or `Matrix.CommandRoomId`. It must be unencrypted (section 1).
   Only `m.room.message` events with `msgtype` `m.text` in that room count; other rooms, other event
-  and message types (notices, emotes, files) and the bot's own messages are ignored.
+  and message types (notices, emotes, files) and the bot's own messages are ignored. So is any event
+  whose `content.m.relates_to` has a `rel_type` (an `m.replace` edit, a thread message, ...): it is
+  not a new message. A reply (`m.in_reply_to`, no `rel_type`) is read like any message.
 - **Syntax.** ASF's `CommandPrefix` (`!status bot1`), a mention of the bot (`@asf status bot1`, or
   the full user ID; a trailing `:` or `,` is allowed), or both (`@asf !status bot1`). The mention
-  is matched case-insensitively against the localpart or user ID from `/account/whoami`. With an
-  empty `CommandPrefix`, only the mention form is a command. Anything else is chat and ignored
-  without a log line.
-- **Checks, in order.** Sender in the allow-list (else refused, no answer); not older than 5 minutes
-  (`unsigned.age`, else `origin_server_ts`; neither → too old; dropped, no answer); the sender's rate
-  limit, at most 5 commands in any rolling minute (dropped, no answer); the deny-list (refused,
-  answered "This command cannot be run from Matrix.", arguments never echoed).
+  is matched case-insensitively against the localpart or user ID from `/account/whoami`, or against
+  the display name of a pill (`<a href="https://matrix.to/#/@asf:server">Name</a>`, the user ID
+  URL-decoded) in a `formatted_body` with `format` `org.matrix.custom.html`; the command text is
+  always read from `body`. `m.mentions` alone does not make a command: clients put the replied-to
+  sender there on every reply, so a reply to a notice would otherwise run as one. With an empty
+  `CommandPrefix`, only the mention form is a command. Anything else is chat and ignored without a
+  log line.
+- **Checks, in order.** Sender in the allow-list (else refused, no answer); a valid age of at most 5
+  minutes (dropped, no answer); the sender's rate limit, at most 5 commands in any rolling minute
+  (dropped, no answer); the deny-list (refused, answered "This command cannot be run from Matrix.",
+  arguments never echoed).
+- **Age.** `unsigned.age` (kept when negative) plus the time since the sync answer arrived, else the
+  age from `origin_server_ts`. Taken right before the command runs, so a command that waited behind
+  a slow one is judged at that moment. Invalid, so dropped: neither field, or an age below -1
+  minute (dated in the future beyond clock skew, which would otherwise stay fresh until that date).
 - **Deny-list.** Every verb starting with `2FA` or `TRANSFER`, and `INPUT`, `ENCRYPT`, `PRIVACY`,
   whatever the sender's level. The verb is the first word of the text passed to ASF, split with
   ASF's own `Split(Array.Empty<char>(), RemoveEmptyEntries)` and folded with `ToUpperInvariant`,
@@ -615,7 +629,11 @@ user and the plugin is configured.
   bot by name), as IPC does, so ASF's own access checks apply and a bot name argument targets other
   bots. The allow-list level maps to `EAccess`; `Owner` is never used. No bot → "ASF has no bot to
   run the command on."; an exception → "The command failed, see the ASF log.", with only its type
-  in the audit line. An empty answer (ASF's way of refusing a low level) sends nothing.
+  in the audit line. An empty answer (ASF's way of refusing a low level) sends nothing. The command
+  runs on the thread pool with a 2-minute timeout; when it fires, the answer is "Still running, the
+  answer will not be posted.", ASF's work is not cancelled (its late answer or failure is dropped),
+  and the listener moves on. The deny-list covers ASF's own commands only: a command another plugin
+  adds through `OnBotCommand` runs at the sender's level.
 - **Reply.** A `CommandReply` with ASF's answer: trimmed, carriage returns removed, capped at 4000
   characters at a whole character with "… (truncated)". It goes through `Emit`, the filter, the rate
   limiter and the send queue like a notification: no dedupe (each reply answers its own command),
@@ -625,15 +643,18 @@ user and the plugin is configured.
 - **Audit.** One line per command: `Matrix command from <sender>: <VERB> → <outcome>`. Sender and
   verb have control characters replaced and are cut at 64 characters; a verb containing the token
   reads `[redacted]`. Never the arguments. Info for run and dropped-by-age, warning for refusals,
-  rate limits and failures.
+  rate limits, failures and timeouts. A sender outside the allow-list is logged at most once per 10
+  minutes, and at most 16 such senders per 10 minutes; the rest are refused without a line.
 - **Sync.** A background task, started 10 seconds after `OnASFInit` (ASF registers its bots after
   it), calls `/account/whoami`, then long-polls `GET /_matrix/client/v3/sync` (`timeout` 30 s,
   request deadline 50 s, response capped at 1 MiB) with an inline filter: only the room, timeline
   `types` `m.room.message`, `not_senders` the bot, `limit` 20, nothing from presence, account data,
-  ephemeral or state. The token goes in the `Authorization` header only.
+  ephemeral or state. The token goes in the `Authorization` header only. The listener owns the
+  sync client and its `HttpClient`, and disposes both, so a repeated `OnASFInit` leaves none behind.
 - **From now, no replay.** Without a saved position, the first sync has no `since` and `timeout`
   0; its events are skipped. `next_batch` is saved in ASF's global database
-  (`ASFNotifier.SyncToken`) before any command of that batch runs, so a crash mid-command replays
+  (`ASFNotifier.SyncToken`, a JSON string built with `Utf8JsonWriter`, not ASF's reflection-based
+  `ToJsonElement`) before any command of that batch runs, so a crash mid-command replays
   nothing, and only when the room's timeline had events, so an idle room causes no writes. A saved
   position the homeserver rejects with a 4xx other than 401/403/429 is dropped with one warning
   and the listener starts from now again.
@@ -641,7 +662,8 @@ user and the plugin is configured.
   `Retry-After`, else the backoff), clamped to 1–60 s. Network errors, timeouts, 5xx and unusable
   answers: the send queue's backoff (2 s doubling to 5 min), one warning when it starts, one info
   line when it ends. Errors carry the status and an `M_*` code at most, as in `MatrixChannel`.
-- Commands run one at a time on the listener's task; a slow command delays the next sync.
+- Commands run one at a time on the listener's task; a slow command delays the next sync by up to
+  the 2-minute timeout. A stop is checked before each command of a batch.
 
 ## 10. Error handling
 
@@ -650,7 +672,7 @@ user and the plugin is configured.
 | Hook throws | Caught in the adapter, logged with `ASF.ArchiLogger.LogGenericException`, never rethrown. |
 | Homeserver unreachable, timeout (`HttpClient.Timeout` 10 s), 5xx | `Transient`: the worker retries the same `txnId` with exponential backoff 2 s, 4 s, … capped at 5 min, until it succeeds or the channel turns degraded. New notifications wait in the queue (capacity 100, `DropOldest`). One warning when the outage starts, one info line when it ends. |
 | `429 M_LIMIT_EXCEEDED` | `RetryAfter`: wait `retry_after_ms` from the JSON body (fall back to the `Retry-After` header, then to the backoff), capped at 60 seconds, then retry the same `txnId`. |
-| `401 M_UNKNOWN_TOKEN` / `M_MISSING_TOKEN`, `403 M_FORBIDDEN` | Drop that notification and enter `Degraded` (section 4.7). While degraded, notifications are dropped; the first one at least 10 minutes after the last failure is tried again. Logged only on a state change: one error on entering `Degraded` (naming the status, `errcode` and, for 403, the room ID), one info line on returning to `Healthy`. |
+| `401 M_UNKNOWN_TOKEN` / `M_MISSING_TOKEN`, `403 M_FORBIDDEN` | Drop that notification and enter `Degraded` (section 4.7; a 403 for a command reply in another room drops only that reply). While degraded, notifications are dropped; the first one at least 10 minutes after the last failure is tried again. Logged only on a state change: one error on entering `Degraded` (naming the status, `errcode` and, for 403, the room ID), one info line on returning to `Healthy`. |
 | Other 4xx | Drop that notification, log a warning with status and `errcode`. |
 | Queue full | `DropOldest`; count drops and log at most once per minute. |
 | ASF shutdown | See 10.1. |

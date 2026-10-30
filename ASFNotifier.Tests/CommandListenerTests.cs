@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
@@ -17,11 +18,14 @@ internal sealed class CommandListenerTests {
 	private const string WhoAmI = """{"user_id": "@asf:example.org"}""";
 
 	private static readonly string[] SaveThenRun = ["save s3", "run status"];
+	private static readonly string[] WithinTheSkew = ["status skew", "status originskew"];
 
 	private sealed class FakeHost : ICommandHost {
 		internal bool Accept { get; set; } = true;
 		internal List<string> Events { get; } = [];
 		internal List<Notification> Replies { get; } = [];
+		// A task for the commands that should not finish at once; null: Run answers at once
+		internal Func<string, Task<CommandRun>?> Pending { get; set; } = static _ => null;
 		internal List<(CommandAccess Access, string Command)> Runs { get; } = [];
 		internal Func<CommandAccess, string, CommandRun> Run { get; set; } = static (_, command) => new CommandRun(true, $"<bot1> done: {command}");
 		internal string? Stored { get; set; }
@@ -41,7 +45,7 @@ internal sealed class CommandListenerTests {
 			Runs.Add((access, command));
 			Events.Add("run " + command);
 
-			return Task.FromResult(Run(access, command));
+			return Pending(command) ?? Task.FromResult(Run(access, command));
 		}
 
 		void ICommandHost.SaveSyncToken(string token) {
@@ -51,21 +55,24 @@ internal sealed class CommandListenerTests {
 	}
 
 	private sealed class Rig : IDisposable {
-		private readonly HttpClient Http;
+		private readonly MatrixSyncClient Sync;
 
 		internal FakeHandler Handler { get; } = new();
 		internal FakeHost Host { get; } = new();
+		internal HttpClient Http { get; }
 		internal CommandListener Listener { get; }
 		internal FakeLog Log { get; } = new();
 		internal FakeClock Time { get; } = new();
 
 		internal Rig(string users = $"{SyncJson.Alice}=Master,{Bob}=Operator", Func<TimeSpan, CancellationToken, Task>? delay = null) {
 			Http = MatrixSyncClient.CreateHttpClient(Handler);
-			Listener = new CommandListener(new MatrixSyncClient(Http, TestData.Homeserver, TestData.Token, Time), TestData.RoomId, CommandAllowList.Parse(users, new FakeLog()), TestData.Token, Host, Time, Log, delay);
+			Sync = new MatrixSyncClient(Http, TestData.Homeserver, TestData.Token, Time);
+			Listener = new CommandListener(Sync, TestData.RoomId, CommandAllowList.Parse(users, new FakeLog()), TestData.Token, Host, Time, Log, delay);
 		}
 
 		public void Dispose() {
 			Listener.Dispose();
+			Sync.Dispose();
 			Http.Dispose();
 			Handler.Dispose();
 		}
@@ -246,7 +253,27 @@ internal sealed class CommandListenerTests {
 		Assert.IsEmpty(rig.Host.Runs);
 		Assert.IsEmpty(rig.Host.Replies);
 		Assert.HasCount(2, rig.Log.Warnings);
-		Assert.AreEqual($"Matrix command from {Mallory}: STATUS → refused, sender not in the allow-list", rig.Log.Warnings[0]);
+		Assert.AreEqual($"Matrix command from {Mallory}: STATUS → refused, sender not in the allow-list (not logged again for 10 minutes)", rig.Log.Warnings[0]);
+	}
+
+	[TestMethod]
+	internal async Task ARefusedSenderIsLoggedOncePerWindowForABoundedNumberOfSenders() {
+		using Rig rig = new();
+		await rig.Started().ConfigureAwait(false);
+
+		await rig.Receive(SyncJson.Message("!status", Mallory, id: "$m1"), SyncJson.Message("!2fa", Mallory, id: "$m2")).ConfigureAwait(false);
+		Assert.HasCount(1, rig.Log.Warnings);
+
+		// A crowd of strangers: only the first ones are logged
+		await rig.Receive(Enumerable.Range(0, 20).Select(static i => SyncJson.Message("!status", $"@stranger{i}:example.org", id: $"$s{i}")).ToArray()).ConfigureAwait(false);
+		Assert.HasCount(CommandListener.RefusedSenderLimit, rig.Log.Warnings);
+		Assert.IsEmpty(rig.Host.Runs);
+		Assert.IsEmpty(rig.Host.Replies);
+
+		// A window later Mallory is logged again
+		rig.Time.Advance(CommandListener.RefusedLogWindow);
+		await rig.Receive(SyncJson.Message("!status", Mallory, id: "$m3")).ConfigureAwait(false);
+		Assert.HasCount(CommandListener.RefusedSenderLimit + 1, rig.Log.Warnings);
 	}
 
 	[TestMethod]
@@ -303,6 +330,131 @@ internal sealed class CommandListenerTests {
 		).ConfigureAwait(false);
 
 		Assert.AreEqual("status fresh", rig.Host.Runs.Single().Command);
+	}
+
+	// A remote server's clock, or a forged timestamp, must not keep a command fresh for as long as its date lies ahead
+	[TestMethod]
+	internal async Task CommandsDatedInTheFutureAreDropped() {
+		using Rig rig = new();
+		await rig.Started().ConfigureAwait(false);
+		long now = rig.Time.Now.ToUnixTimeMilliseconds();
+
+		await rig.Receive(
+			SyncJson.Message("!status age", age: -120_000, id: "$age", originServerTs: now),
+			SyncJson.Message("!status origin", age: null, id: "$origin", originServerTs: now + 120_000),
+			SyncJson.Message("!status skew", age: -30_000, id: "$skew"),
+			SyncJson.Message("!status originskew", age: null, id: "$originskew", originServerTs: now + 30_000)
+		).ConfigureAwait(false);
+
+		CollectionAssert.AreEqual(WithinTheSkew, rig.Host.Runs.Select(static run => run.Command).ToArray());
+		Assert.AreEqual(2, rig.Log.Infos.Count(static line => line.EndsWith("STATUS → dropped, no valid age (unknown or dated in the future)", StringComparison.Ordinal)));
+	}
+
+	// Commands run one at a time: one that took long ages the next before it runs
+	[TestMethod]
+	internal async Task TheAgeIsCheckedAgainRightBeforeEachCommand() {
+		using Rig rig = new();
+		rig.Host.Run = (_, command) => {
+			rig.Time.Advance(TimeSpan.FromMinutes(4));
+
+			return new CommandRun(true, "done " + command);
+		};
+
+		await rig.Started().ConfigureAwait(false);
+
+		await rig.Receive(SyncJson.Message("!status slow", id: "$slow", age: 0), SyncJson.Message("!status next", id: "$next", age: 90_000)).ConfigureAwait(false);
+
+		Assert.AreEqual("status slow", rig.Host.Runs.Single().Command);
+		StringAssert.EndsWith(rig.Log.Infos[^1], "STATUS → dropped, older than 5 minutes", StringComparison.Ordinal);
+	}
+
+	[TestMethod]
+	internal async Task AHungCommandIsAnsweredAfterTheTimeoutAndTheNextOneRuns() {
+		List<TimeSpan> waits = [];
+		TaskCompletionSource<CommandRun> hung = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+		// The first command's timeout fires at once; the next one's never does, so that command finishes first
+		Task Delay(TimeSpan wait, CancellationToken token) {
+			lock (waits) {
+				waits.Add(wait);
+
+				return waits.Count == 1 ? Task.CompletedTask : Task.Delay(Timeout.InfiniteTimeSpan, token);
+			}
+		}
+
+		using Rig rig = new(delay: Delay);
+		rig.Host.Pending = command => command == "status hung" ? hung.Task : null;
+		await rig.Started().ConfigureAwait(false);
+
+		await rig.Receive(SyncJson.Message("!status hung", id: "$hung"), SyncJson.Message("!status next", id: "$next")).ConfigureAwait(false);
+
+		Assert.AreEqual(TimeSpan.FromMinutes(2), CommandListener.CommandTimeout);
+		Assert.AreEqual(CommandListener.CommandTimeout, waits[0]);
+		Assert.HasCount(2, rig.Host.Replies);
+		Assert.AreEqual("Still running, the answer will not be posted.", rig.Host.Replies[0].Text);
+		Assert.AreEqual("$hung", rig.Host.Replies[0].InReplyTo);
+		Assert.AreEqual("<bot1> done: status next", rig.Host.Replies[1].Text);
+		StringAssert.EndsWith(rig.Log.Warnings.Single(), "STATUS → still running after 2 minutes, answer not posted", StringComparison.Ordinal);
+
+		// ASF's work was not cancelled; when it ends, its answer is not posted
+		hung.SetException(new InvalidOperationException("late"));
+		await Task.Delay(50).ConfigureAwait(false);
+		Assert.HasCount(2, rig.Host.Replies);
+		Assert.IsEmpty(rig.Log.Errors);
+	}
+
+	[TestMethod]
+	internal async Task StoppingEndsTheBatchBetweenCommands() {
+		// A timeout that never fires, so the first command finishes normally and the loop sees the stop
+		using Rig rig = new(delay: static (_, _) => Task.Delay(Timeout.InfiniteTimeSpan, CancellationToken.None));
+		using CancellationTokenSource stop = new();
+		rig.Host.Run = (_, command) => {
+			stop.Cancel();
+
+			return new CommandRun(true, command);
+		};
+
+		await rig.Started().ConfigureAwait(false);
+		rig.Handler.Enqueue(HttpStatusCode.OK, SyncJson.Batch("s3", SyncJson.Message("!status one", id: "$1"), SyncJson.Message("!status two", id: "$2")));
+
+		await Assert.ThrowsAsync<OperationCanceledException>(() => rig.Listener.PollOnceAsync(stop.Token)).ConfigureAwait(false);
+
+		Assert.AreEqual("status one", rig.Host.Runs.Single().Command);
+		Assert.IsEmpty(rig.Log.Errors);
+	}
+
+	[TestMethod]
+	internal async Task APillMentionRunsButAReplyThatOnlyMentionsTheBotDoesNot() {
+		using Rig rig = new();
+		await rig.Started().ConfigureAwait(false);
+
+		await rig.Receive(
+			SyncJson.Message("ASF Bot: status bot1", id: "$pill", formattedBody: "<a href=\"https://matrix.to/#/@asf:example.org\">ASF Bot</a>: status bot1", extraContent: """, "m.mentions": {"user_ids": ["@asf:example.org"]}"""),
+
+			// Clients mention the replied-to sender in every reply: answering a notice is not a command
+			SyncJson.Message("restart please", id: "$reply", extraContent: """, "m.mentions": {"user_ids": ["@asf:example.org"]}, "m.relates_to": {"m.in_reply_to": {"event_id": "$notice"}}""")
+		).ConfigureAwait(false);
+
+		Assert.AreEqual("status bot1", rig.Host.Runs.Single().Command);
+		Assert.AreEqual("$pill", rig.Host.Replies.Single().InReplyTo);
+	}
+
+	[TestMethod]
+	internal async Task DisposingTheListenerDisposesItsHttpClient() {
+		using Rig rig = new();
+
+		rig.Listener.Dispose();
+
+		await Assert.ThrowsAsync<ObjectDisposedException>(() => rig.Http.GetAsync(new Uri(TestData.Homeserver))).ConfigureAwait(false);
+	}
+
+	// The adapter stores the sync position without ASF's reflection-based serializer
+	[TestMethod]
+	internal void TheSyncPositionIsStoredAsAJsonString() {
+		JsonElement stored = ASFNotifier.JsonString("s72_1/+\"&\\");
+
+		Assert.AreEqual(JsonValueKind.String, stored.ValueKind);
+		Assert.AreEqual("s72_1/+\"&\\", stored.GetString());
 	}
 
 	[TestMethod]
@@ -419,7 +571,8 @@ internal sealed class CommandListenerTests {
 		FakeHost host = new();
 		using FakeHandler handler = new();
 		using HttpClient client = MatrixSyncClient.CreateHttpClient(handler);
-		using CommandListener listener = new(new MatrixSyncClient(client, TestData.Homeserver, TestData.Token, new FakeClock()), "!commands:example.org", CommandAllowList.Parse($"{SyncJson.Alice}=Master", new FakeLog()), TestData.Token, host, new FakeClock(), new FakeLog());
+		using MatrixSyncClient sync = new(client, TestData.Homeserver, TestData.Token, new FakeClock());
+		using CommandListener listener = new(sync, "!commands:example.org", CommandAllowList.Parse($"{SyncJson.Alice}=Master", new FakeLog()), TestData.Token, host, new FakeClock(), new FakeLog());
 		handler.Enqueue(HttpStatusCode.OK, WhoAmI);
 		handler.Enqueue(HttpStatusCode.OK, """{"next_batch": "s1"}""");
 		handler.Enqueue(HttpStatusCode.OK, SyncJson.Rooms("s2", SyncJson.Room("!commands:example.org", SyncJson.Message("!status"))));

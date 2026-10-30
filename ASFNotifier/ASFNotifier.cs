@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Threading;
@@ -233,7 +234,20 @@ internal sealed class ASFNotifier : IASF, IBot, IBotCardsFarmerInfo, IBotCommand
 		return new CommandRun(true, await bot.Commands.Response(level, command).ConfigureAwait(false));
 	}
 
-	void ICommandHost.SaveSyncToken(string token) => ASF.GlobalDatabase?.SaveToJsonStorage(SyncTokenKey, token);
+	void ICommandHost.SaveSyncToken(string token) => ASF.GlobalDatabase?.SaveToJsonStorage(SyncTokenKey, JsonString(token));
+
+	// Built by hand: SaveToJsonStorage<T> goes through ASF's reflection-based ToJsonElement (issue #23)
+	internal static JsonElement JsonString(string value) {
+		using MemoryStream stream = new();
+
+		using (Utf8JsonWriter writer = new(stream)) {
+			writer.WriteStringValue(value);
+		}
+
+		using JsonDocument document = JsonDocument.Parse(stream.ToArray());
+
+		return document.RootElement.Clone();
+	}
 
 	// Disconnect timer, on a timer thread
 	bool IWatcherHost.Emit(Notification notification) {

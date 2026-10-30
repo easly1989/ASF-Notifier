@@ -137,6 +137,42 @@ internal sealed class MatrixSyncClientTests {
 		Assert.AreEqual(1767225600000, second.OriginServerTs);
 	}
 
+	// An edit repeats an old message and other relations annotate one; only a plain message or a reply is new
+	[TestMethod]
+	internal async Task EditsAndOtherRelationsAreSkippedButRepliesAreKept() {
+		using Rig rig = new();
+		rig.Handler.Enqueue(HttpStatusCode.OK, SyncJson.Batch(
+			"s2",
+			SyncJson.Message("* !status", id: "$edit", extraContent: """, "m.new_content": {"msgtype": "m.text", "body": "!status"}, "m.relates_to": {"rel_type": "m.replace", "event_id": "$e0"}"""),
+			SyncJson.Message("!status", id: "$thread", extraContent: """, "m.relates_to": {"rel_type": "m.thread", "event_id": "$root"}"""),
+			SyncJson.Message("!status", id: "$odd", extraContent: """, "m.relates_to": {"rel_type": 5}"""),
+			SyncJson.Message("!status", id: "$reply", extraContent: """, "m.relates_to": {"m.in_reply_to": {"event_id": "$notice"}}""")
+		));
+
+		SyncResult result = await Sync(rig).ConfigureAwait(false);
+
+		Assert.AreEqual(4, result.EventCount);
+		Assert.AreEqual("$reply", result.Messages.Single().EventId);
+	}
+
+	// A negative age is passed on, not replaced by origin_server_ts, so the listener can refuse a future-dated event
+	[TestMethod]
+	internal async Task AFutureAgeIsKeptAndTheHtmlBodyIsRead() {
+		using Rig rig = new();
+		rig.Handler.Enqueue(HttpStatusCode.OK, SyncJson.Batch(
+			"s2",
+			SyncJson.Message("ASF Bot: status", age: -120_000, id: "$future", originServerTs: 1, formattedBody: "<b>ASF Bot</b>: status"),
+			SyncJson.Message("!status", age: 1_000_000_000_000_000, id: "$absurd", extraContent: """, "formatted_body": "<b>no format</b>" """)
+		));
+
+		SyncResult result = await Sync(rig).ConfigureAwait(false);
+
+		Assert.AreEqual(TimeSpan.FromMinutes(-2), result.Messages[0].Age);
+		Assert.AreEqual("<b>ASF Bot</b>: status", result.Messages[0].FormattedBody);
+		Assert.AreEqual(TimeSpan.FromMilliseconds(1e12), result.Messages[1].Age);
+		Assert.IsNull(result.Messages[1].FormattedBody);
+	}
+
 	[TestMethod]
 	internal async Task AnEmptyBatchHasNoEvents() {
 		using Rig rig = new();
@@ -230,11 +266,13 @@ internal static class SyncJson {
 	// A sync answer with the events in the notification room
 	internal static string Batch(string next, params string[] events) => Rooms(next, Room(TestData.RoomId, events));
 
-	internal static string Message(string body, string sender = Alice, string msgType = "m.text", long? age = 1000, string id = "$e1", long? originServerTs = null) {
+	// extraContent: more members of content, as JSON starting with a comma
+	internal static string Message(string body, string sender = Alice, string msgType = "m.text", long? age = 1000, string id = "$e1", long? originServerTs = null, string? formattedBody = null, string extraContent = "") {
 		string unsigned = age == null ? "" : ", \"unsigned\": {\"age\": " + age.Value.ToString(CultureInfo.InvariantCulture) + "}";
 		string origin = originServerTs == null ? "" : ", \"origin_server_ts\": " + originServerTs.Value.ToString(CultureInfo.InvariantCulture);
+		string html = formattedBody == null ? "" : ", \"format\": \"org.matrix.custom.html\", \"formatted_body\": " + JsonSerializer.Serialize(formattedBody);
 
-		return "{\"type\": \"m.room.message\", \"event_id\": " + JsonSerializer.Serialize(id) + ", \"sender\": " + JsonSerializer.Serialize(sender) + ", \"content\": {\"msgtype\": " + JsonSerializer.Serialize(msgType) + ", \"body\": " + JsonSerializer.Serialize(body) + "}" + unsigned + origin + "}";
+		return "{\"type\": \"m.room.message\", \"event_id\": " + JsonSerializer.Serialize(id) + ", \"sender\": " + JsonSerializer.Serialize(sender) + ", \"content\": {\"msgtype\": " + JsonSerializer.Serialize(msgType) + ", \"body\": " + JsonSerializer.Serialize(body) + html + extraContent + "}" + unsigned + origin + "}";
 	}
 
 	// One joined room with its timeline, for Rooms
