@@ -287,16 +287,36 @@ internal sealed class CommandListenerTests {
 	}
 
 	[TestMethod]
-	internal async Task NoAnswerFromAsfSendsNoReply() {
+	[DataRow(null, DisplayName = "Null answer")]
+	[DataRow("", DisplayName = "Empty answer")]
+	[DataRow("  \n", DisplayName = "Blank answer")]
+	internal async Task NoAnswerFromAsfSendsAHint(string? response) {
 		using Rig rig = new();
-		rig.Host.Run = static (_, _) => new CommandRun(true, null);
+		rig.Host.Run = (_, _) => new CommandRun(true, response);
 		await rig.Started().ConfigureAwait(false);
 
-		await rig.Receive(SyncJson.Message("!exit", Bob)).ConfigureAwait(false);
+		await rig.Receive(SyncJson.Message("!status main", Bob, id: "$cmd")).ConfigureAwait(false);
 
 		Assert.HasCount(1, rig.Host.Runs);
-		Assert.IsEmpty(rig.Host.Replies);
-		StringAssert.EndsWith(rig.Log.Infos.Single(), "EXIT → ran, no answer", StringComparison.Ordinal);
+		Notification reply = rig.Host.Replies.Single();
+		Assert.AreEqual(NotificationKind.CommandReply, reply.Kind);
+		Assert.AreEqual("No answer from ASF: check the bot name, or your access level may be too low for this command.", reply.Text);
+		Assert.AreEqual("$cmd", reply.InReplyTo);
+		Assert.AreEqual(TestData.RoomId, reply.RoomId);
+		StringAssert.EndsWith(rig.Log.Infos.Single(), "STATUS → ran, no answer (hint sent)", StringComparison.Ordinal);
+	}
+
+	[TestMethod]
+	internal async Task ABlockedNoAnswerHintIsAudited() {
+		using Rig rig = new();
+		rig.Host.Run = static (_, _) => new CommandRun(true, null);
+		rig.Host.Accept = false;
+		await rig.Started().ConfigureAwait(false);
+
+		await rig.Receive(SyncJson.Message("!status main", Bob)).ConfigureAwait(false);
+
+		Assert.HasCount(1, rig.Host.Replies);
+		StringAssert.EndsWith(rig.Log.Infos.Single(), "STATUS → ran, no answer, reply not sent", StringComparison.Ordinal);
 	}
 
 	[TestMethod]
