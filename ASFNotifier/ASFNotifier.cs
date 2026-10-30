@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using ArchiSteamFarm.Core;
+using ArchiSteamFarm.Localization;
 using ArchiSteamFarm.Plugins.Interfaces;
 using ArchiSteamFarm.Steam;
 using ArchiSteamFarm.Storage;
@@ -232,7 +233,10 @@ internal sealed class ASFNotifier : IASF, IBot, IBotCardsFarmerInfo, IBotCommand
 			_ => EAccess.None
 		};
 
-		return new CommandRun(true, await bot.Commands.Response(level, command).ConfigureAwait(false));
+		string? response = await bot.Commands.Response(level, command).ConfigureAwait(false);
+
+		// ASF formats it with its current culture, so building it the same way here matches in any language
+		return new CommandRun(true, response, response == bot.Commands.FormatBotResponse(Strings.UnknownCommand));
 	}
 
 	void ICommandHost.SaveSyncToken(string token) => ASF.GlobalDatabase?.SaveToJsonStorage(SyncTokenKey, JsonString(token));

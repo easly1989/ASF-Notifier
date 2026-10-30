@@ -7,7 +7,8 @@ using System.Threading.Tasks;
 namespace ASFNotifier;
 
 // BotFound false: ASF has no bot to run the command on
-internal readonly record struct CommandRun(bool BotFound, string? Response);
+// UnknownVerb: the answer is ASF's "unknown command" one, built by the host so it matches in any language
+internal readonly record struct CommandRun(bool BotFound, string? Response, bool UnknownVerb = false);
 
 // What the listener needs of ASF; the adapter implements it, tests fake it
 internal interface ICommandHost {
@@ -186,9 +187,23 @@ internal sealed class CommandListener : IDisposable {
 		}
 
 		if (string.IsNullOrWhiteSpace(run.Response)) {
-			// ASF answers nothing for an unknown bot name or a level too low for the command, and Matrix users never see its reason
+			// ASF answers nothing for an unknown bot name or a level too low for the command, and Matrix users never see its reason.
+			// A bare-prefix command may be meant for another bot in the room, so only a mention gets the hint
+			if (!command.Mentioned) {
+				Audit(message, command, "ran, no answer");
+
+				return;
+			}
+
 			bool hinted = Reply(message, NoAnswerHint);
 			Audit(message, command, "ran, no answer" + (hinted ? " (hint sent)" : ", reply not sent"));
+
+			return;
+		}
+
+		// Another bot in the room may own a bare "!verb"; ASF's "Unknown command!" for it would be noise
+		if (run.UnknownVerb && !command.Mentioned) {
+			Audit(message, command, "ran, unknown verb (bare prefix, not answered)");
 
 			return;
 		}
