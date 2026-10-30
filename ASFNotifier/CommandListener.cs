@@ -44,6 +44,7 @@ internal sealed class CommandListener : IDisposable {
 	internal static readonly TimeSpan StartDelay = TimeSpan.FromSeconds(10);
 
 	private const int MaxLoggedLength = 64;
+	private const string NoAnswerHint = "No answer from ASF: check the bot name, or your access level may be too low for this command.";
 	private const string Redacted = "[redacted]";
 
 	private readonly string AccessToken;
@@ -185,8 +186,9 @@ internal sealed class CommandListener : IDisposable {
 		}
 
 		if (string.IsNullOrWhiteSpace(run.Response)) {
-			// ASF answers nothing when the access level is too low for the command
-			Audit(message, command, "ran, no answer");
+			// ASF answers nothing for an unknown bot name or a level too low for the command, and Matrix users never see its reason
+			bool hinted = Reply(message, NoAnswerHint);
+			Audit(message, command, "ran, no answer" + (hinted ? " (hint sent)" : ", reply not sent"));
 
 			return;
 		}
