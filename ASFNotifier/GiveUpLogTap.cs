@@ -16,14 +16,16 @@ internal interface IGiveUpLog {
 }
 
 // Spec section 5.3: records, per bot logger, the latest ASF give-up error and the latest login or logged-off reason.
-// It keeps time, method and parsed EResult only; log text is never stored, forwarded or logged again.
+// It keeps time, method and parsed EResult only; log text is never stored or logged again. With onError, it also hands
+// Error and Fatal entries to the AsfError forwarder (section 5.6), off the logging thread and only while wantErrors says
+// AsfError can be on.
 internal sealed class GiveUpLogTap : IDisposable, IGiveUpLog {
 	internal const string RuleName = "ASFNotifierTap";
 
 	private const string OnLoggedOff = nameof(OnLoggedOff);
 
 	// ASF's Stop() call sites that log an Error first (spec fact 3)
-	private static readonly FrozenSet<string> GiveUpMethods = new[] { StopClassifier.HandleLoginResult, OnLoggedOff, "OnLoggedOn", "OnConnected", "RequestInput" }.ToFrozenSet(StringComparer.Ordinal);
+	internal static readonly FrozenSet<string> GiveUpMethods = new[] { StopClassifier.HandleLoginResult, OnLoggedOff, "OnLoggedOn", "OnConnected", "RequestInput" }.ToFrozenSet(StringComparer.Ordinal);
 
 	private readonly Action<Action> Defer;
 	private readonly Dictionary<string, (TapEntry? GiveUpError, TapEntry? Reason)> Entries = new(StringComparer.Ordinal);
@@ -34,16 +36,21 @@ internal sealed class GiveUpLogTap : IDisposable, IGiveUpLog {
 	private readonly Lock RegistrationLock = new();
 
 	private readonly Clock Clock;
+	private readonly Action<LoggedError>? OnError;
+	private readonly Func<bool>? WantErrors;
 
 	private TapTarget? CurrentTarget;
 	private bool Disposed;
 
-	// defer is a test seam; production hands the re-registration to the thread pool
-	internal GiveUpLogTap(LogFactory factory, Clock clock, Action<Action>? defer = null) {
+	// defer is a test seam; production hands the re-registration and onError to the thread pool. wantErrors runs on the
+	// logging thread for each Error and Fatal entry, so it must be cheap; null means always
+	internal GiveUpLogTap(LogFactory factory, Clock clock, Action<Action>? defer = null, Action<LoggedError>? onError = null, Func<bool>? wantErrors = null) {
 		ArgumentNullException.ThrowIfNull(factory);
 
 		Factory = factory;
 		Clock = clock;
+		OnError = onError;
+		WantErrors = wantErrors;
 		// Task.Run, not ThreadPool: the trimmed ASF has no System.Threading.ThreadPool facade (issue #23)
 		Defer = defer ?? (static work => Task.Run(work));
 
@@ -89,9 +96,13 @@ internal sealed class GiveUpLogTap : IDisposable, IGiveUpLog {
 	}
 
 	// Called by NLog for every Info-or-above entry of every logger, on the logging thread: stays cheap and never throws
-	private void Record(string? loggerName, LogLevel level, string? message) {
+	private void Record(string? loggerName, LogLevel level, string? message, Exception? exception) {
 		if ((loggerName == null) || (message == null)) {
 			return;
+		}
+
+		if ((OnError is { } onError) && ((level == LogLevel.Error) || (level == LogLevel.Fatal))) {
+			HandOff(onError, loggerName, message, exception);
 		}
 
 		int end = message.IndexOf("() ", StringComparison.Ordinal);
@@ -159,6 +170,33 @@ internal sealed class GiveUpLogTap : IDisposable, IGiveUpLog {
 		}
 	}
 
+	// Only references are captured here; the exception's text is read later, off the logging thread. Deferred, because
+	// emitting can log (a full queue) and logging from inside NLog's Write must not happen. A failure here is swallowed:
+	// it must never cost the give-up record the stop classification needs
+	private void HandOff(Action<LoggedError> onError, string loggerName, string message, Exception? exception) {
+		try {
+			if ((WantErrors?.Invoke() == false) || IsDisposed()) {
+				return;
+			}
+
+			LoggedError error = new(loggerName, message, Clock.GetUtcNow(), exception);
+
+			Defer(() => {
+				if (!IsDisposed()) {
+					onError(error);
+				}
+			});
+		} catch (Exception) {
+			// The target must not throw into NLog
+		}
+	}
+
+	private bool IsDisposed() {
+		lock (Lock) {
+			return Disposed;
+		}
+	}
+
 	private static int RemoveRules(LoggingConfiguration configuration) {
 		int removed = 0;
 
@@ -180,6 +218,6 @@ internal sealed class GiveUpLogTap : IDisposable, IGiveUpLog {
 			Name = RuleName;
 		}
 
-		protected override void Write(LogEventInfo logEvent) => Tap.Record(logEvent.LoggerName, logEvent.Level, logEvent.FormattedMessage);
+		protected override void Write(LogEventInfo logEvent) => Tap.Record(logEvent.LoggerName, logEvent.Level, logEvent.FormattedMessage, logEvent.Exception);
 	}
 }

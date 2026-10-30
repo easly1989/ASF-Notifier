@@ -60,6 +60,7 @@ internal sealed class CommandParserTests {
 	[DataRow(Pill, "ASF Bot", DisplayName = "Plain")]
 	[DataRow("<a href='https://matrix.to/#/%40asf%3Aexample.org?via=example.org'>ASF Bot</a>", "ASF Bot", DisplayName = "Encoded, single quotes, via")]
 	[DataRow("<a href=\"https://matrix.to/#/@alice:example.org\">Alice</a> and <a href=\"https://matrix.to/#/@ASF:example.org\"> A &amp; B </a>", "A & B", DisplayName = "Second pill, entity, case")]
+	[DataRow("<a href=\"https://matrix.to/#/@asf:example.org\">Bot&#x27;s &#039;Name&#39;</a>", "Bot's 'Name'", DisplayName = "Apostrophes")]
 	[DataRow("<a href=\"https://matrix.to/#/@alice:example.org\">Alice</a>", null, DisplayName = "Another user")]
 	[DataRow("<a href=\"https://matrix.to/#/@asf:example.org", null, DisplayName = "Cut off")]
 	[DataRow("plain text", null, DisplayName = "No pill")]

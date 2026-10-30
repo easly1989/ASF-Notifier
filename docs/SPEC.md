@@ -17,7 +17,6 @@ Status: approved design (2026-10-27), revised after review; facts verified again
 
 **Non-goals for v1**
 
-- Generic ASF errors forwarded from the log (an NLog target): a separate ticket, marked later.
 - Card drops, trades, gifts, redeems or any other event not in the table in section 6.
 - Any channel other than Matrix. `INotificationChannel` exists only as the test seam for
   `MatrixChannel`; there is no channel registry or plugin model.
@@ -143,6 +142,7 @@ destroy and recreate the bot).
 - **FarmingSource** (`IBotCardsFarmerInfo`): emits `FarmingFinished` (only when
   `farmedSomething`), `FarmingStarted`, `FarmingStopped`.
 - **AsfVersionSource** (`IASF.OnASFInit`): emits `AsfUpdated` once per version change.
+- **AsfErrorSource** (the NLog tap): emits `AsfError` for ASF's own error entries (section 5.6).
 - **NotifyTestCommand** (`IBotCommand2`): builds a `Test` notification and sends it directly.
 - **CommandListener** (no hook; a background task started in `OnASFInit`): reads the command room
   and runs ASF commands, answering with `CommandReply`. Section 9.1.
@@ -152,7 +152,7 @@ destroy and recreate the bot).
 ```csharp
 enum NotificationKind { BotStoppedByAsf, BotStopped, BotDisconnected, BotReconnected,
                         FarmingFinished, FarmingStarted, FarmingStopped, AsfUpdated,
-                        Suppressed, Test, CommandReply }
+                        AsfError, Suppressed, Test, CommandReply }
 
 sealed record Notification(
     NotificationKind Kind,
@@ -165,7 +165,8 @@ sealed record Notification(
     int? Count = null,               // Suppressed
     bool LoginFailed = false,        // BotStoppedByAsf: the reason came from the login result (section 8)
     bool AsfGaveUp = false,          // BotStoppedByAsf: backed by a give-up error (section 5.3)
-    string? Text = null,             // CommandReply: ASF's answer, capped (section 9.1)
+    string? Method = null,           // AsfError: the ASF method that logged it (section 5.6)
+    string? Text = null,             // AsfError: the entry's first line, trimmed; CommandReply: ASF's answer, capped (9.1)
     string? InReplyTo = null,        // CommandReply: event ID of the command
     string? RoomId = null);          // CommandReply: the command room
 ```
@@ -200,13 +201,17 @@ the dropped disconnect, so the watcher never marks the outage as notified.
 
 Applied after the filter, before the queue (`RateLimiter`):
 
-- **Dedupe**: the same `(Kind, BotName)` is sent at most once every 10 minutes, measured from
+- **Dedupe**: the same `(Kind, BotName)` (for `AsfError`, `(Kind, BotName, Method)`) is sent at most
+  once every 10 minutes, measured from
   the last one that was sent (9:59 later is dropped, 10:00 later is sent). Later ones in
   the window are dropped and counted as suppressed. Exception: `BotReconnected` is never
   deduped when it closes a `BotDisconnected` that was sent, so every "disconnected" message
   gets its "reconnected". The limiter tracks this itself: a passed `BotDisconnected` opens the
   bot's outage, the next passed `BotReconnected`, `BotStopped` or `BotStoppedByAsf` closes it
   (a stop ends the outage, 5.1).
+- **`AsfError` sub-cap**: at most 5 `AsfError` messages in any rolling 60 minutes. They count in
+  the hourly cap below too, so errors can never take more than 5 of its 20 slots; one over the
+  sub-cap is dropped and counted like any other drop.
 - **Hourly cap**: at most 20 messages in any rolling 60 minutes; a slot frees exactly 60
   minutes after it was taken. Beyond that, messages are dropped and counted. `BotStoppedByAsf`
   and `BotReconnected` are exempt from the cap (they are the messages that must never be
@@ -375,7 +380,10 @@ second delay on stop messages, and that stopping every bot within 10 seconds (fo
 `HandleLoginResult()` / `OnLoggedOff()` entry at any level that names an `EResult`, for the
 reason (an entry without one, such as the final "Received InvalidPassword error code … times"
 in a language that translates it, must not wipe the reason logged by the attempt before). It
-stores only time, method and the parsed `EResult`, never forwards or re-logs log text.
+stores only time, method and the parsed `EResult`, never re-logs log text. It also hands `Error`
+and `Fatal` entries to the `AsfError` forwarder (section 5.6), deferred to the thread pool, so
+nothing is emitted or logged inside NLog's `Write`; the give-up record never depends on that
+hand-off.
 
 - Registration: insert a rule from `Info` to `Fatal` for all loggers at the top of the current
   `LogManager.Configuration` (so a `final` rule in a custom `NLog.config` cannot hide entries
@@ -441,6 +449,39 @@ This works for every variant, including Docker, where ASF updates by replacing t
 `IUpdateAware` is not implemented: it never fires in Docker and would duplicate the startup
 message elsewhere.
 
+### 5.6 Generic ASF errors
+
+`AsfError`, off by default. `AsfErrorForwarder` holds the adapter's glue without ASF types.
+
+- **Cheap on the logging thread.** For each `Error` or `Fatal` entry the tap first asks
+  `AsfErrorForwarder.Wanted`: the plugin is configured and the global `Events.AsfError` or an
+  enabled bot's `Events.AsfError` is on (a lock-free scan of the bot settings). Off: nothing more
+  happens. On: the tap captures references only (logger name, formatted message, time, the
+  exception object) and defers the rest; a failure in that hand-off is swallowed, so it never costs
+  the give-up record. Deferred work does not run once the tap is disposed.
+- On the thread pool, `AsfErrorSource` turns the entry into a notification, or nothing:
+
+- Only ArchiLogger's shape: `"{method}() {message}"`, or `"{method}()"` for an exception entry, with
+  a method name of identifier characters. The logger is `ASF` (no bot name) or a bot of this ASF
+  (`Bot.BotsReadOnly`); other loggers (libraries, ASF's web host) are not forwarded.
+- **No feedback loop.** Every `Error` the plugin writes carries the method name `ASFNotifier` (its
+  `AsfLog` and every `LogGenericException` call pass `nameof(ASFNotifier)`), and entries with that
+  method are never forwarded. A failure while forwarding is logged the same way.
+- **No token.** An entry whose message or exception text (`ToString()`, read here, off the
+  logging thread) contains the access token is not forwarded at all. An exception whose text cannot
+  be read cannot be checked, so its entry is not forwarded either.
+- **No duplicate of `BotStoppedByAsf`.** For a bot whose `BotStoppedByAsf` is on (the filter's
+  answer for that bot), errors from the give-up methods of section 5.3 (`HandleLoginResult`,
+  `OnLoggedOff`, `OnLoggedOn`, `OnConnected`, `RequestInput`) are not forwarded.
+- Text: the first line after `() `, trimmed to 300 characters (299 and `…`, never half a surrogate
+  pair). An exception entry has no text of its own: its exception type stands in; the exception
+  message is never sent.
+- It then goes through `Emit` like every event: the filter (global `Events.AsfError`, and for a bot
+  logger that bot's `Events.AsfError`), dedupe on `(AsfError, BotName, Method)` so one recurring
+  error does not drain the hourly cap, the `AsfError` sub-cap of 5 an hour (4.5), the cap, the queue.
+- A test scans the plugin's sources and fails when an `Error`- or `Fatal`-level `ArchiLogger` call
+  does not pass `nameof(ASFNotifier)`, which the no-loop rule depends on.
+
 ## 6. Events
 
 | Event (config key) | Trigger | Default |
@@ -453,8 +494,9 @@ message elsewhere.
 | `BotStopped` | Stopped without an ASF error (manual stop, config edit, rename, `ShutdownOnFarmingFinished`) | off |
 | `FarmingStarted` | Farming started | off |
 | `FarmingStopped` | Farming stopped | off |
+| `AsfError` | ASF or a bot logged an error (section 5.6) | off |
 
-Out of v1: generic errors through an NLog target (separate ticket, later), card drops.
+Out of v1: card drops.
 
 ## 7. Configuration
 
@@ -560,6 +602,8 @@ and versions HTML-escaped. Bot name = ASF bot name (the config file name).
 | `FarmingStarted` | `▶️ bot1 — farming started` | `▶️ <b>bot1</b> — farming started` |
 | `FarmingStopped` | `⏸️ bot1 — farming stopped` | `⏸️ <b>bot1</b> — farming stopped` |
 | `AsfUpdated` | `⬆️ ASF updated 6.3.10.6 → 6.3.11.7` | `⬆️ ASF updated <code>6.3.10.6</code> → <code>6.3.11.7</code>` |
+| `AsfError` (bot) | `❗ bot1 — OnConnected(): SteamLogin is invalid!` | `❗ <b>bot1</b> — <code>OnConnected()</code>: SteamLogin is invalid!` |
+| `AsfError` (ASF) | `❗ ASF — Update(): Could not check the latest version!` | `❗ <b>ASF</b> — <code>Update()</code>: Could not check the latest version!` |
 | `Suppressed` | `⚠️ ASF-Notifier — 7 notifications suppressed (rate limit)` | `⚠️ <b>ASF-Notifier</b> — 7 notifications suppressed (rate limit)` |
 | `Test` | `🧪 ASF-Notifier test from bot1 — delivery works` | `🧪 <b>ASF-Notifier</b> test from <b>bot1</b> — delivery works` |
 | `CommandReply` | ASF's answer as is, e.g. `<bot1> ASF V6.3.10.6` | the same, HTML-escaped, line breaks as `<br>` |
@@ -723,7 +767,8 @@ returns at once.
   (global, per bot, env var), filter, rate limiter and dedupe (with `FakeClock`),
   formatter (every row of section 8, HTML escaping), `ConnectionWatcher` state machine (fake
   time, fake bot state), stop classifier (synthetic tap entries, shutdown flag, required
-  input), the stop hold (one bot, every bot together, shutdown meanwhile), `EResult` token
+  input), the stop hold (one bot, every bot together, shutdown meanwhile), `AsfErrorSource` (shape,
+  loggers, self-log and token exclusion, first line, trimming), `EResult` token
   parsing, the `!notifytest` decision function, the command allow-list, parser and deny-list (with
   bypass attempts), the command listener against a fake homeserver (from now, saved position, age,
   rooms, own messages, rate limits, replies, backoff, token never in any output), the send queue
@@ -786,4 +831,4 @@ Based on the template's workflows, trimmed:
   check 4 settles which one happens.
 - The original assumption that `OnBotDisconnected`'s `EResult` and `KeepRunning == false` are
   enough to detect "login failed, ASF stopped the bot" does not hold (fact 3); the NLog tap
-  in section 5.3 is the replacement, and it is the only NLog use in v1.
+  in section 5.3 is the replacement; the same tap feeds `AsfError` (section 5.6).

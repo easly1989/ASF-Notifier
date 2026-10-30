@@ -19,6 +19,7 @@ internal sealed class FilterAndFormatterTests {
 	[DataRow(NotificationKind.BotStopped, false)]
 	[DataRow(NotificationKind.FarmingStarted, false)]
 	[DataRow(NotificationKind.FarmingStopped, false)]
+	[DataRow(NotificationKind.AsfError, false)]
 	internal void BuiltInDefaults(NotificationKind kind, bool expected) =>
 		Assert.AreEqual(expected, Filter.Allows(Of(kind), Settings()));
 
@@ -126,6 +127,17 @@ internal sealed class FilterAndFormatterTests {
 
 		Assert.IsNull(message.RoomId);
 		Assert.IsNull(message.InReplyTo);
+	}
+
+	[TestMethod]
+	[DataRow("bot1", "OnConnected", "SteamLogin is invalid!", "❗ bot1 — OnConnected(): SteamLogin is invalid!", "❗ <b>bot1</b> — <code>OnConnected()</code>: SteamLogin is invalid!", DisplayName = "Bot error")]
+	[DataRow(null, "Update", "Could not check", "❗ ASF — Update(): Could not check", "❗ <b>ASF</b> — <code>Update()</code>: Could not check", DisplayName = "ASF error")]
+	[DataRow("a<b>", "Start", "x < y & \"z\"", "❗ a<b> — Start(): x < y & \"z\"", "❗ <b>a&lt;b&gt;</b> — <code>Start()</code>: x &lt; y &amp; &quot;z&quot;", DisplayName = "Escaped in HTML only")]
+	internal void FormatterAsfErrorRow(string? bot, string method, string text, string plain, string html) {
+		FormattedMessage message = Formatter.Format(new Notification(NotificationKind.AsfError, bot, DateTimeOffset.UnixEpoch, Method: method, Text: text));
+
+		Assert.AreEqual(plain, message.PlainText);
+		Assert.AreEqual(html, message.Html);
 	}
 
 	[TestMethod]

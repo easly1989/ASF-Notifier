@@ -81,7 +81,7 @@ internal static class CommandParser {
 
 	// The entities a client writes for text in an HTML body; by hand, the trimmed ASF has no WebUtility (issue #23). An
 	// entity left over only makes the name not match body, so the message is not taken as a mention
-	private static string HtmlText(string html) => html.Replace("&lt;", "<", StringComparison.Ordinal).Replace("&gt;", ">", StringComparison.Ordinal).Replace("&quot;", "\"", StringComparison.Ordinal).Replace("&#39;", "'", StringComparison.Ordinal).Replace("&amp;", "&", StringComparison.Ordinal);
+	private static string HtmlText(string html) => html.Replace("&lt;", "<", StringComparison.Ordinal).Replace("&gt;", ">", StringComparison.Ordinal).Replace("&quot;", "\"", StringComparison.Ordinal).Replace("&#39;", "'", StringComparison.Ordinal).Replace("&#039;", "'", StringComparison.Ordinal).Replace("&#x27;", "'", StringComparison.OrdinalIgnoreCase).Replace("&amp;", "&", StringComparison.Ordinal);
 
 	private static string? AfterMention(string text, string mention) {
 		if (!text.StartsWith(mention, StringComparison.OrdinalIgnoreCase)) {

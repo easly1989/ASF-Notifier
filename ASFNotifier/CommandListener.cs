@@ -153,12 +153,13 @@ internal sealed class CommandListener : IDisposable {
 		}
 
 		if (finished != running) {
-			cancellationToken.ThrowIfCancellationRequested();
-
-			// ASF's work is not cancelled; its answer is dropped when it comes, and the next command goes on
+			// ASF's work is not cancelled; its answer is dropped when it comes, also when the listener is stopping
 #pragma warning disable CA2025 // The command uses none of this method's disposables
 			_ = Abandon(running);
 #pragma warning restore CA2025 // The command uses none of this method's disposables
+			cancellationToken.ThrowIfCancellationRequested();
+
+			// The next command goes on
 			bool sent = Reply(message, "Still running, the answer will not be posted.");
 			Audit(message, command, $"still running after {CommandTimeout.TotalMinutes:0} minutes, answer not posted" + (sent ? "" : ", reply not sent"), true);
 
