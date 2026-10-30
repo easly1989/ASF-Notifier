@@ -320,6 +320,43 @@ internal sealed class CommandListenerTests {
 	}
 
 	[TestMethod]
+	[DataRow("@asf:example.org status main", DisplayName = "Full user ID")]
+	[DataRow("ASF Bot: status main", DisplayName = "Pill")]
+	internal async Task OtherMentionFormsGetTheHintToo(string body) {
+		using Rig rig = new();
+		rig.Host.Run = static (_, _) => new CommandRun(true, null);
+		await rig.Started().ConfigureAwait(false);
+
+		await rig.Receive(SyncJson.Message(body, Bob, formattedBody: "<a href=\"https://matrix.to/#/@asf:example.org\">ASF Bot</a>: status main")).ConfigureAwait(false);
+
+		StringAssert.EndsWith(rig.Log.Infos.Single(), "STATUS → ran, no answer (hint sent)", StringComparison.Ordinal);
+	}
+
+	[TestMethod]
+	[DataRow("!logs x", false, DisplayName = "Bare unknown is silent")]
+	[DataRow("@asf logs x", true, DisplayName = "Mentioned unknown is answered")]
+	internal async Task AnUnknownVerbIsAnsweredOnlyWhenMentioned(string body, bool answered) {
+		using Rig rig = new();
+		rig.Host.Run = static (_, _) => new CommandRun(true, "<bot1> Unknown command!", true);
+		await rig.Started().ConfigureAwait(false);
+
+		await rig.Receive(SyncJson.Message(body, Bob)).ConfigureAwait(false);
+
+		Assert.HasCount(answered ? 1 : 0, rig.Host.Replies);
+		StringAssert.EndsWith(rig.Log.Infos.Single(), answered ? "LOGS → ran" : "LOGS → ran, unknown verb (bare prefix, not answered)", StringComparison.Ordinal);
+	}
+
+	[TestMethod]
+	internal async Task ABareKnownCommandIsAnswered() {
+		using Rig rig = new();
+		await rig.Started().ConfigureAwait(false);
+
+		await rig.Receive(SyncJson.Message("!status bot1", Bob)).ConfigureAwait(false);
+
+		Assert.HasCount(1, rig.Host.Replies);
+	}
+
+	[TestMethod]
 	internal async Task ABarePrefixCommandWithNoAnswerStaysSilent() {
 		using Rig rig = new();
 		rig.Host.Run = static (_, _) => new CommandRun(true, null);

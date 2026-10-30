@@ -7,7 +7,8 @@ using System.Threading.Tasks;
 namespace ASFNotifier;
 
 // BotFound false: ASF has no bot to run the command on
-internal readonly record struct CommandRun(bool BotFound, string? Response);
+// UnknownVerb: the answer is ASF's "unknown command" one, built by the host so it matches in any language
+internal readonly record struct CommandRun(bool BotFound, string? Response, bool UnknownVerb = false);
 
 // What the listener needs of ASF; the adapter implements it, tests fake it
 internal interface ICommandHost {
@@ -196,6 +197,13 @@ internal sealed class CommandListener : IDisposable {
 
 			bool hinted = Reply(message, NoAnswerHint);
 			Audit(message, command, "ran, no answer" + (hinted ? " (hint sent)" : ", reply not sent"));
+
+			return;
+		}
+
+		// Another bot in the room may own a bare "!verb"; ASF's "Unknown command!" for it would be noise
+		if (run.UnknownVerb && !command.Mentioned) {
+			Audit(message, command, "ran, unknown verb (bare prefix, not answered)");
 
 			return;
 		}

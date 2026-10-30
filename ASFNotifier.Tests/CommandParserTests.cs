@@ -31,6 +31,9 @@ internal sealed class CommandParserTests {
 	[DataRow("!status bot1", false, DisplayName = "Prefix only")]
 	[DataRow("@asf status bot1", true, DisplayName = "Localpart")]
 	[DataRow("@asf:example.org status", true, DisplayName = "Full user ID")]
+	[DataRow("@asf: status", true, DisplayName = "Mention and colon")]
+	[DataRow("@asf, !status", true, DisplayName = "Mention, comma and prefix")]
+	[DataRow("@ASF status", true, DisplayName = "Upper case mention")]
 	[DataRow("@asf !status bot1", true, DisplayName = "Mention and prefix")]
 	internal void MentionedIsReported(string body, bool mentioned) => Assert.AreEqual(mentioned, CommandParser.Parse(body, "!", BotUserId)?.Mentioned);
 
