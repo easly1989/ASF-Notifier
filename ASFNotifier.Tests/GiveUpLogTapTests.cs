@@ -160,6 +160,102 @@ internal sealed class GiveUpLogTapTests {
 		Assert.IsFalse(factory.Configuration.LoggingRules.Any(static rule => rule.RuleName == GiveUpLogTap.RuleName));
 	}
 
+	[TestMethod]
+	internal void ErrorAndFatalEntriesAreHandedOnOffTheLoggingThread() {
+		using LogFactory factory = Factory();
+		FakeClock time = new();
+		List<Action> deferred = [];
+		List<LoggedError> errors = [];
+
+		using GiveUpLogTap tap = new(factory, time, deferred.Add, errors.Add);
+
+		factory.GetLogger("bot1").Error("OnConnected() SteamLogin is invalid!");
+		factory.GetLogger("ASF").Fatal("Init() broken");
+		factory.GetLogger("ASF").Error(new InvalidOperationException("detail"), "OnBotDisconnected()");
+		factory.GetLogger("bot1").Warn("OnConnected() only a warning");
+		factory.GetLogger("bot1").Info("OnConnected() only an info");
+
+		// Nothing runs inside NLog's Write
+		Assert.IsEmpty(errors);
+		RunAll(deferred);
+
+		Assert.HasCount(3, errors);
+		Assert.AreEqual(new LoggedError("bot1", "OnConnected() SteamLogin is invalid!", time.Now), errors[0]);
+		Assert.AreEqual("ASF", errors[1].LoggerName);
+		Assert.AreEqual("Init() broken", errors[1].Message);
+		Assert.AreEqual("OnBotDisconnected()", errors[2].Message);
+		Assert.IsInstanceOfType<InvalidOperationException>(errors[2].Exception);
+
+		// The give-up record works as before
+		Assert.IsNotNull(tap.Get("bot1").GiveUpError);
+	}
+
+	[TestMethod]
+	internal void WithoutACallbackNothingIsHandedOn() {
+		using LogFactory factory = Factory();
+		List<Action> deferred = [];
+
+		using GiveUpLogTap tap = new(factory, new FakeClock(), deferred.Add);
+
+		factory.GetLogger("bot1").Error("Start() failed");
+
+		Assert.IsEmpty(deferred);
+	}
+
+	// AsfError off everywhere: no task, no capture, only the cheap check
+	[TestMethod]
+	internal void WithAsfErrorOffNothingIsHandedOn() {
+		using LogFactory factory = Factory();
+		List<Action> deferred = [];
+		List<LoggedError> errors = [];
+		int asked = 0;
+
+		using GiveUpLogTap tap = new(factory, new FakeClock(), deferred.Add, errors.Add, () => {
+			asked++;
+
+			return false;
+		});
+
+		factory.GetLogger("bot1").Error("OnConnected() SteamLogin is invalid!");
+		factory.GetLogger("bot1").Warn("Start() only a warning");
+
+		Assert.AreEqual(1, asked);
+		Assert.IsEmpty(deferred);
+		Assert.IsNotNull(tap.Get("bot1").GiveUpError);
+	}
+
+	// Nothing on the logging thread reads the exception's text, so one that cannot be printed costs nothing there
+	[TestMethod]
+	internal void AnExceptionThatCannotBePrintedKeepsTheGiveUpRecord() {
+		using LogFactory factory = Factory();
+		List<Action> deferred = [];
+		List<LoggedError> errors = [];
+
+		using GiveUpLogTap tap = new(factory, new FakeClock(), deferred.Add, errors.Add);
+
+		factory.GetLogger("bot1").Error(new UnprintableException(), "OnConnected() SteamLogin is invalid!");
+
+		Assert.AreEqual("OnConnected", tap.Get("bot1").GiveUpError?.Method);
+		RunAll(deferred);
+		Assert.IsInstanceOfType<UnprintableException>(errors.Single().Exception);
+	}
+
+	[TestMethod]
+	internal void TheCallbackDoesNotRunAfterDispose() {
+		using LogFactory factory = Factory();
+		List<Action> deferred = [];
+		List<LoggedError> errors = [];
+		GiveUpLogTap tap = new(factory, new FakeClock(), deferred.Add, errors.Add);
+
+		factory.GetLogger("bot1").Error("Start() failed");
+		tap.Dispose();
+		RunAll(deferred);
+		factory.GetLogger("bot1").Error("Start() failed again");
+		RunAll(deferred);
+
+		Assert.IsEmpty(errors);
+	}
+
 	private static LogFactory Factory() => new() { Configuration = new LoggingConfiguration() };
 
 	private static void RunAll(List<Action> deferred) {
@@ -169,5 +265,15 @@ internal sealed class GiveUpLogTapTests {
 
 		deferred.Clear();
 	}
+
+#pragma warning disable CA1064 // Only these tests throw and catch it
+	private sealed class UnprintableException : Exception {
+		public UnprintableException() { }
+		public UnprintableException(string message) : base(message) { }
+		public UnprintableException(string message, Exception innerException) : base(message, innerException) { }
+
+		public override string ToString() => throw new InvalidOperationException("no text");
+	}
+#pragma warning restore CA1064 // Only these tests throw and catch it
 }
 #pragma warning restore CA1812 // MSTest uses this class during runtime

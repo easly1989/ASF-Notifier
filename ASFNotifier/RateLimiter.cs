@@ -8,16 +8,22 @@ namespace ASFNotifier;
 // Lock order: Lock is held while calling enqueue, so the summary lands right before its message; the queue never
 // calls back into the limiter, and the limiter never calls the watcher or the stop hold.
 internal sealed class RateLimiter(Clock clock) {
+	internal const int AsfErrorHourlyCap = 5;
 	internal const int HourlyCap = 20;
 	internal static readonly TimeSpan CapWindow = TimeSpan.FromHours(1);
 	internal static readonly TimeSpan DedupeWindow = TimeSpan.FromMinutes(10);
 
 	// Windows and slots use monotonic timestamps, so a wall clock stepping back mutes nothing
-	private readonly Dictionary<(NotificationKind Kind, string? BotName), long> LastSent = [];
+	// Method is null except for AsfError, so one recurring error does not drain the hourly cap (spec section 5.6)
+	private readonly Dictionary<(NotificationKind Kind, string? BotName, string? Method), long> LastSent = [];
 	private readonly Lock Lock = new();
 
 	// Bots whose BotDisconnected went out and has no BotReconnected or stop yet
 	private readonly HashSet<string> OpenOutages = new(StringComparer.Ordinal);
+
+	// When each AsfError slot of the rolling hour was taken: those slots count in Slots too, but at most
+	// AsfErrorHourlyCap of them, so an error storm never takes the slots the other events need (spec section 5.6)
+	private readonly Queue<long> AsfErrorSlots = new();
 
 	// When each slot of the rolling hour was taken, oldest first
 	private readonly Queue<long> Slots = new();
@@ -33,18 +39,19 @@ internal sealed class RateLimiter(Clock clock) {
 		lock (Lock) {
 			long now = clock.GetTimestamp();
 
-			while ((Slots.Count > 0) && (clock.GetElapsedTime(Slots.Peek(), now) >= CapWindow)) {
-				Slots.Dequeue();
-			}
+			Expire(Slots, now);
+			Expire(AsfErrorSlots, now);
 
-			(NotificationKind, string?) key = (notification.Kind, notification.BotName);
+			(NotificationKind, string?, string?) key = (notification.Kind, notification.BotName, notification.Method);
 			bool closesOutage = (notification is { Kind: NotificationKind.BotReconnected, BotName: { } bot }) && OpenOutages.Contains(bot);
 			bool deduped = !closesOutage && LastSent.TryGetValue(key, out long last) && (clock.GetElapsedTime(last, now) < DedupeWindow);
 
 			// The messages that must never be lost; they still take a slot when there is one
 			bool exempt = notification.Kind is NotificationKind.BotStoppedByAsf or NotificationKind.BotReconnected;
 
-			if (deduped || (!exempt && (Slots.Count >= HourlyCap))) {
+			bool errorCapped = (notification.Kind == NotificationKind.AsfError) && (AsfErrorSlots.Count >= AsfErrorHourlyCap);
+
+			if (deduped || errorCapped || (!exempt && (Slots.Count >= HourlyCap))) {
 				SuppressedCount++;
 
 				return false;
@@ -64,6 +71,10 @@ internal sealed class RateLimiter(Clock clock) {
 			TakeSlot(now);
 			LastSent[key] = now;
 
+			if (notification.Kind == NotificationKind.AsfError) {
+				AsfErrorSlots.Enqueue(now);
+			}
+
 			if (notification.BotName is { } name) {
 				switch (notification.Kind) {
 					case NotificationKind.BotDisconnected:
@@ -78,6 +89,13 @@ internal sealed class RateLimiter(Clock clock) {
 			}
 
 			return true;
+		}
+	}
+
+	// Under Lock: a slot frees exactly CapWindow after it was taken
+	private void Expire(Queue<long> slots, long now) {
+		while ((slots.Count > 0) && (clock.GetElapsedTime(slots.Peek(), now) >= CapWindow)) {
+			slots.Dequeue();
 		}
 	}
 

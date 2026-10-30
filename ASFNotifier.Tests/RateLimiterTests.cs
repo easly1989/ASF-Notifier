@@ -244,6 +244,63 @@ internal sealed class RateLimiterTests {
 	}
 
 	[TestMethod]
+	internal void AsfErrorsAreDedupedByBotAndMethod() {
+		Assert.IsTrue(PassError("bot1", "OnConnected"));
+		Assert.IsFalse(PassError("bot1", "OnConnected"), "the same error again");
+		Assert.IsTrue(PassError("bot1", "Start"), "another method");
+		Assert.IsTrue(PassError("bot2", "OnConnected"), "another bot");
+		Assert.IsTrue(PassError(null, "OnConnected"), "ASF itself");
+
+		Clock.Advance(RateLimiter.DedupeWindow);
+		Assert.IsTrue(PassError("bot1", "OnConnected"), "after the window");
+	}
+
+	[TestMethod]
+	internal void ARecurringAsfErrorTakesOneSlotPerWindow() {
+		for (int i = 0; i < 50; i++) {
+			PassError("bot1", "OnConnected");
+			Clock.Advance(TimeSpan.FromSeconds(10));
+		}
+
+		// 500 s of the same error: one message and one slot
+		Assert.HasCount(1, Queued);
+
+		// The next message carries the summary of the 49 repeats; the hour has room for the rest
+		Assert.IsTrue(Pass(NotificationKind.FarmingFinished, "next"));
+		Assert.AreEqual(49, Queued[1].Count);
+		FillTheHour(RateLimiter.HourlyCap - 3);
+		Assert.IsFalse(Pass(NotificationKind.FarmingFinished, "over"));
+	}
+
+	[TestMethod]
+	internal void AnErrorStormKeepsToItsSubCapAndLeavesTheRestOfTheHour() {
+		for (int i = 0; i < 10; i++) {
+			Assert.AreEqual(i < RateLimiter.AsfErrorHourlyCap, PassError("bot1", $"Method{i}"), $"error {i}");
+		}
+
+		Assert.AreEqual(RateLimiter.AsfErrorHourlyCap, Queued.Count(static notification => notification.Kind == NotificationKind.AsfError));
+
+		// The other events keep the rest of the hour: the summary of the 5 drops rides on the first one, 14 more fit
+		Assert.IsTrue(Pass(NotificationKind.FarmingFinished, "first"));
+		Assert.AreEqual(5, Queued[^2].Count);
+		FillTheHour(RateLimiter.HourlyCap - RateLimiter.AsfErrorHourlyCap - 2);
+		Assert.IsFalse(Pass(NotificationKind.FarmingFinished, "over"));
+
+		// An error slot frees an hour after it was taken
+		Clock.Advance(Start + RateLimiter.CapWindow - Clock.Now);
+		Assert.IsTrue(PassError("bot1", "Method9"));
+	}
+
+	[TestMethod]
+	internal void ErrorsCannotFillTheCapLeftByOtherEvents() {
+		FillTheHour(RateLimiter.HourlyCap - 2);
+
+		Assert.IsTrue(PassError("bot1", "Method0"));
+		Assert.IsTrue(PassError("bot1", "Method1"));
+		Assert.IsFalse(PassError("bot1", "Method2"), "the overall cap still applies");
+	}
+
+	[TestMethod]
 	internal void AQueueThatRefusesIsReported() => Assert.IsFalse(Limiter.Pass(new Notification(NotificationKind.FarmingFinished, "bot1", Clock.Now), static _ => false));
 
 	// Takes count slots with distinct bots, one minute apart, starting now
@@ -255,6 +312,13 @@ internal sealed class RateLimiterTests {
 			Clock.Advance(TimeSpan.FromSeconds(1));
 		}
 	}
+
+	private bool PassError(string? bot, string method) =>
+		Limiter.Pass(new Notification(NotificationKind.AsfError, bot, Clock.Now, Method: method, Text: "failed"), notification => {
+			Queued.Add(notification);
+
+			return true;
+		});
 
 	private bool Pass(NotificationKind kind, string? bot) =>
 		Limiter.Pass(new Notification(kind, bot, Clock.Now), notification => {

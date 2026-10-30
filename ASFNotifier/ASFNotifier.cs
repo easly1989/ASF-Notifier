@@ -58,7 +58,8 @@ internal sealed class ASFNotifier : IASF, IBot, IBotCardsFarmerInfo, IBotCommand
 			if (settings is { IsConfigured: true, HomeserverUrl: { } homeserver, RoomId: { } roomId, AccessToken: { } token }) {
 				channel = new MatrixChannel(MatrixChannel.CreateHttpClient(), homeserver, roomId, token, Clock.System, new AsfLog());
 				Queue = new SendQueue(channel, new AsfLog(), Clock.System);
-				Tap = new GiveUpLogTap(LogManager.LogFactory, Clock.System);
+				AsfErrorForwarder errors = new(() => Settings, BotConfigs, static name => Bot.BotsReadOnly?.ContainsKey(name) == true, notification => Emit(notification), new AsfLog());
+				Tap = new GiveUpLogTap(LogManager.LogFactory, Clock.System, onError: errors.Forward, wantErrors: () => errors.Wanted);
 				Watcher = new ConnectionWatcher(Tap, () => IsShuttingDown, Clock.System, TimeSpan.FromMinutes(settings.DisconnectedNotifyAfterMinutes), this);
 				HoldTimer = Clock.System.CreateTimer(_ => ReleaseHeldStops(), null, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
 				RegisterShutdownSignals();
@@ -73,7 +74,7 @@ internal sealed class ASFNotifier : IASF, IBot, IBotCardsFarmerInfo, IBotCommand
 			// Last: Settings and Queue are ready for the Emit
 			CheckAsfVersion();
 		} catch (Exception e) {
-			ASF.ArchiLogger.LogGenericException(e);
+			ASF.ArchiLogger.LogGenericException(e, nameof(ASFNotifier));
 		}
 
 		return Task.CompletedTask;
@@ -120,7 +121,7 @@ internal sealed class ASFNotifier : IASF, IBot, IBotCardsFarmerInfo, IBotCommand
 		try {
 			return await NotifyTest.HandleAsync(bot.BotName, args.Length > 0 ? args[0] : null, IsMasterOrHigher(access), CancellationToken.None).ConfigureAwait(false);
 		} catch (Exception e) {
-			ASF.ArchiLogger.LogGenericException(e);
+			ASF.ArchiLogger.LogGenericException(e, nameof(ASFNotifier));
 
 			return null;
 		}
@@ -133,7 +134,7 @@ internal sealed class ASFNotifier : IASF, IBot, IBotCardsFarmerInfo, IBotCommand
 			BotConfigs.Remove(bot.BotName);
 			Watcher?.OnDestroy(bot.BotName);
 		} catch (Exception e) {
-			ASF.ArchiLogger.LogGenericException(e);
+			ASF.ArchiLogger.LogGenericException(e, nameof(ASFNotifier));
 		}
 
 		return Task.CompletedTask;
@@ -158,7 +159,7 @@ internal sealed class ASFNotifier : IASF, IBot, IBotCardsFarmerInfo, IBotCommand
 
 			Emit(notification);
 		} catch (Exception e) {
-			ASF.ArchiLogger.LogGenericException(e);
+			ASF.ArchiLogger.LogGenericException(e, nameof(ASFNotifier));
 		}
 
 		return Task.CompletedTask;
@@ -173,7 +174,7 @@ internal sealed class ASFNotifier : IASF, IBot, IBotCardsFarmerInfo, IBotCommand
 		try {
 			BotConfigs.Replace(bot.BotName, additionalConfigProperties, new AsfLog());
 		} catch (Exception e) {
-			ASF.ArchiLogger.LogGenericException(e);
+			ASF.ArchiLogger.LogGenericException(e, nameof(ASFNotifier));
 		}
 
 		return Task.CompletedTask;
@@ -185,7 +186,7 @@ internal sealed class ASFNotifier : IASF, IBot, IBotCardsFarmerInfo, IBotCommand
 		try {
 			Emit(Watcher?.OnLoggedOn(bot.BotName));
 		} catch (Exception e) {
-			ASF.ArchiLogger.LogGenericException(e);
+			ASF.ArchiLogger.LogGenericException(e, nameof(ASFNotifier));
 		}
 
 		return Task.CompletedTask;
@@ -210,7 +211,7 @@ internal sealed class ASFNotifier : IASF, IBot, IBotCardsFarmerInfo, IBotCommand
 
 	BotStatus? IWatcherHost.GetStatus(string botName) => Bot.BotsReadOnly?.GetValueOrDefault(botName) is { } bot ? new BotStatus(bot.KeepRunning, bot.IsConnectedAndLoggedOn, RequiredInputOf(bot)) : null;
 
-	void IWatcherHost.OnError(Exception exception) => ASF.ArchiLogger.LogGenericException(exception);
+	void IWatcherHost.OnError(Exception exception) => ASF.ArchiLogger.LogGenericException(exception, nameof(ASFNotifier));
 
 	// Spec section 5.5: the adapter around AsfVersionSource; the global database is loaded before plugins init
 	private void CheckAsfVersion() {
@@ -253,7 +254,7 @@ internal sealed class ASFNotifier : IASF, IBot, IBotCardsFarmerInfo, IBotCommand
 		try {
 			Emit(notification);
 		} catch (Exception e) {
-			ASF.ArchiLogger.LogGenericException(e);
+			ASF.ArchiLogger.LogGenericException(e, nameof(ASFNotifier));
 		}
 
 		return Task.CompletedTask;
@@ -300,7 +301,7 @@ internal sealed class ASFNotifier : IASF, IBot, IBotCardsFarmerInfo, IBotCommand
 				HoldTimer?.Change(due > now ? due - now : TimeSpan.Zero, Timeout.InfiniteTimeSpan);
 			}
 		} catch (Exception e) {
-			ASF.ArchiLogger.LogGenericException(e);
+			ASF.ArchiLogger.LogGenericException(e, nameof(ASFNotifier));
 		}
 	}
 

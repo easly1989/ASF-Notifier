@@ -96,7 +96,7 @@ internal sealed class NotifierSettingsTests {
 	// The README documents exactly these event keys
 	[TestMethod]
 	internal void EveryDocumentedEventKeyIsParsed() {
-		string[] keys = ["BotStoppedByAsf", "BotDisconnected", "BotReconnected", "FarmingFinished", "AsfUpdated", "BotStopped", "FarmingStarted", "FarmingStopped"];
+		string[] keys = ["BotStoppedByAsf", "BotDisconnected", "BotReconnected", "FarmingFinished", "AsfUpdated", "BotStopped", "FarmingStarted", "FarmingStopped", "AsfError"];
 		FakeLog log = new();
 
 		NotifierSettings settings = TestData.Settings(TestData.ConfigJson(", \"Events\": {" + string.Join(", ", keys.Select(static key => $"\"{key}\": false")) + "}"), TestData.Token, log);
