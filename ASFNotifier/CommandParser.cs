@@ -2,8 +2,9 @@ using System;
 
 namespace ASFNotifier;
 
-// Text: what is passed to ASF. Verb: its first word as ASF's own dispatch sees it (args[0], upper-cased invariantly)
-internal readonly record struct ParsedCommand(string Text, string Verb);
+// Text: what is passed to ASF. Verb: its first word as ASF's own dispatch sees it (args[0], upper-cased invariantly).
+// Mentioned: the message named the bot (user ID, localpart or pill), not only the prefix other bots share
+internal readonly record struct ParsedCommand(string Text, string Verb, bool Mentioned);
 
 // Spec section 9.1: turns a room message into an ASF command, without ASF types
 internal static class CommandParser {
@@ -28,6 +29,7 @@ internal static class CommandParser {
 		ArgumentException.ThrowIfNullOrEmpty(botUserId);
 
 		string text = body.TrimStart();
+		bool mentioned = false;
 		bool addressed = false;
 
 		int colon = botUserId.IndexOf(':', StringComparison.Ordinal);
@@ -35,6 +37,7 @@ internal static class CommandParser {
 
 		if ((AfterMention(text, botUserId) ?? (colon > 0 ? AfterMention(text, botUserId[..colon]) : null) ?? (string.IsNullOrEmpty(pill) ? null : AfterMention(text, pill))) is { } rest) {
 			text = rest.TrimStart();
+			mentioned = true;
 			addressed = true;
 		}
 
@@ -52,7 +55,7 @@ internal static class CommandParser {
 		// ASF's own split (Commands.Response): any Unicode white space separates arguments
 		string[] args = text.Split(Array.Empty<char>(), StringSplitOptions.RemoveEmptyEntries);
 
-		return args.Length == 0 ? null : new ParsedCommand(text, args[0].ToUpperInvariant());
+		return args.Length == 0 ? null : new ParsedCommand(text, args[0].ToUpperInvariant(), mentioned);
 	}
 
 	// The text of the first pill (<a href="https://matrix.to/#/@bot:server">Name</a>) that links to the bot; clients put

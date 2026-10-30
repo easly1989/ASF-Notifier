@@ -28,6 +28,16 @@ internal sealed class CommandParserTests {
 	}
 
 	[TestMethod]
+	[DataRow("!status bot1", false, DisplayName = "Prefix only")]
+	[DataRow("@asf status bot1", true, DisplayName = "Localpart")]
+	[DataRow("@asf:example.org status", true, DisplayName = "Full user ID")]
+	[DataRow("@asf !status bot1", true, DisplayName = "Mention and prefix")]
+	internal void MentionedIsReported(string body, bool mentioned) => Assert.AreEqual(mentioned, CommandParser.Parse(body, "!", BotUserId)?.Mentioned);
+
+	[TestMethod]
+	internal void APillIsReportedAsMentioned() => Assert.IsTrue(CommandParser.Parse("ASF Bot: status", "!", BotUserId, "<a href=\"https://matrix.to/#/@asf:example.org\">ASF Bot</a>: status")?.Mentioned);
+
+	[TestMethod]
 	[DataRow("status bot1", DisplayName = "Plain chat")]
 	[DataRow("hello @asf status", DisplayName = "Mention not first")]
 	[DataRow("@asfx status", DisplayName = "Another user")]

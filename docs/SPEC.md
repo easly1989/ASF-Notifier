@@ -674,8 +674,10 @@ user and the plugin is configured.
   bots. The allow-list level maps to `EAccess`; `Owner` is never used. No bot → "ASF has no bot to
   run the command on."; an exception → "The command failed, see the ASF log.", with only its type
   in the audit line. An empty answer (ASF's way of refusing a low level, or an unknown bot name)
-  sends the hint "No answer from ASF: check the bot name, or your access level may be too low for
-  this command." through the same reply path (cap and redaction included); the audit says
+  sends, when the message mentioned the bot (`ParsedCommand.Mentioned`: user ID, localpart or pill,
+  not the prefix alone), the hint "No answer from ASF: check the bot name, or your access level may be
+  too low for this command." through the same reply path (cap and redaction included); a bare-prefix command may be meant for
+  another bot in the room, so it sends nothing and the audit says `ran, no answer`; otherwise the audit says
   `ran, no answer (hint sent)`, or `ran, no answer, reply not sent` when the reply was not accepted,
   for example because the hourly cap is full. The command runs on the thread pool with a 2-minute
   timeout; when it fires, the answer is "Still running, the answer will not be posted.", ASF's work

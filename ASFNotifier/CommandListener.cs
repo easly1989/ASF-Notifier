@@ -186,7 +186,14 @@ internal sealed class CommandListener : IDisposable {
 		}
 
 		if (string.IsNullOrWhiteSpace(run.Response)) {
-			// ASF answers nothing for an unknown bot name or a level too low for the command, and Matrix users never see its reason
+			// ASF answers nothing for an unknown bot name or a level too low for the command, and Matrix users never see its reason.
+			// A bare-prefix command may be meant for another bot in the room, so only a mention gets the hint
+			if (!command.Mentioned) {
+				Audit(message, command, "ran, no answer");
+
+				return;
+			}
+
 			bool hinted = Reply(message, NoAnswerHint);
 			Audit(message, command, "ran, no answer" + (hinted ? " (hint sent)" : ", reply not sent"));
 

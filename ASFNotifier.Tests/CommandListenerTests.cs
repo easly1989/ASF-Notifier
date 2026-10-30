@@ -295,7 +295,7 @@ internal sealed class CommandListenerTests {
 		rig.Host.Run = (_, _) => new CommandRun(true, response);
 		await rig.Started().ConfigureAwait(false);
 
-		await rig.Receive(SyncJson.Message("!status main", Bob, id: "$cmd")).ConfigureAwait(false);
+		await rig.Receive(SyncJson.Message("@asf status main", Bob, id: "$cmd")).ConfigureAwait(false);
 
 		Assert.HasCount(1, rig.Host.Runs);
 		Notification reply = rig.Host.Replies.Single();
@@ -313,10 +313,23 @@ internal sealed class CommandListenerTests {
 		rig.Host.Accept = false;
 		await rig.Started().ConfigureAwait(false);
 
-		await rig.Receive(SyncJson.Message("!status main", Bob)).ConfigureAwait(false);
+		await rig.Receive(SyncJson.Message("@asf status main", Bob)).ConfigureAwait(false);
 
 		Assert.HasCount(1, rig.Host.Replies);
 		StringAssert.EndsWith(rig.Log.Infos.Single(), "STATUS → ran, no answer, reply not sent", StringComparison.Ordinal);
+	}
+
+	[TestMethod]
+	internal async Task ABarePrefixCommandWithNoAnswerStaysSilent() {
+		using Rig rig = new();
+		rig.Host.Run = static (_, _) => new CommandRun(true, null);
+		await rig.Started().ConfigureAwait(false);
+
+		await rig.Receive(SyncJson.Message("!restart jellyfin", Bob)).ConfigureAwait(false);
+
+		Assert.HasCount(1, rig.Host.Runs);
+		Assert.IsEmpty(rig.Host.Replies);
+		StringAssert.EndsWith(rig.Log.Infos.Single(), "RESTART → ran, no answer", StringComparison.Ordinal);
 	}
 
 	[TestMethod]
