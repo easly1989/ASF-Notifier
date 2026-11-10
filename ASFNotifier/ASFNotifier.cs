@@ -60,7 +60,7 @@ internal sealed class ASFNotifier : IASF, IBot, IBotCardsFarmerInfo, IBotCommand
 			HoldTimer?.Dispose();
 			HoldTimer = null;
 
-			NotifierSettings settings = NotifierSettings.Parse(additionalConfigProperties, Environment.GetEnvironmentVariable(NotifierSettings.EnvironmentTokenVariable), new AsfLog());
+			NotifierSettings settings = NotifierSettings.Parse(SettingsFile.Resolve(SettingsFile.DefaultPath, additionalConfigProperties, null, new AsfLog(), out bool fromFile), Environment.GetEnvironmentVariable(NotifierSettings.EnvironmentTokenVariable), new AsfLog(), fromFile);
 			MatrixChannel? channel = null;
 
 			if (settings is { IsConfigured: true, HomeserverUrl: { } homeserver, RoomId: { } roomId, AccessToken: { } token }) {
@@ -185,7 +185,7 @@ internal sealed class ASFNotifier : IASF, IBot, IBotCardsFarmerInfo, IBotCommand
 		ArgumentNullException.ThrowIfNull(bot);
 
 		try {
-			BotConfigs.Replace(bot.BotName, additionalConfigProperties, new AsfLog());
+			BotConfigs.Replace(bot.BotName, SettingsFile.Resolve(SettingsFile.DefaultPath, additionalConfigProperties, bot.BotName, new AsfLog(), out _), new AsfLog());
 		} catch (Exception e) {
 			ASF.ArchiLogger.LogGenericException(e, nameof(ASFNotifier));
 		}
