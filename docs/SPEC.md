@@ -559,6 +559,28 @@ key (never its value) and the plugin stays idle; ASF keeps running.
 Only bot events are honoured per bot; `AsfUpdated` there is ignored with a warning. The room
 is global; there is no per-bot room.
 
+### 7.2.1 Settings file `config/plugins/ASFNotifier.json`
+
+Since 1.2.0.0 the same blocks may live in the settings file of the ASF-PluginConfig storage
+standard (v1): `{ "formatVersion": 1, "global": { … }, "bots": { "<bot>": { … } } }`. `global` has
+the shape of 7.1 and each `bots.<bot>` the shape of 7.2, without the outer `ASFNotifier` key.
+
+- Resolution is per scope. A scope with a value in the file replaces the legacy `ASFNotifier` key of
+  `ASF.json` or of that bot's config whole, with no merge; if the legacy key exists it is ignored and
+  one warning says so (a leftover token there is still served by IPC). A scope the file lacks keeps
+  the legacy key.
+- A missing or empty file is skipped silently. A UTF-8 byte order mark is accepted. Bad JSON, an
+  unreadable file or a missing or different `formatVersion` logs one error, with no value in it, and
+  falls back to the legacy keys.
+- It is read in `OnASFInit` and `OnBotInitModules`, as before; a change needs an ASF restart
+  (`reload: restart`). The plugin shares no assembly with the host.
+- The JSON Schema is embedded as `ASFNotifier.config.schema.json` (`configKey: ASFNotifier`,
+  `storage: file`, `formatVersion: 1`, `reload: restart`). Event booleans carry no `default`, so
+  section 6 stays the only source of defaults. A unit test keeps the schema's `Events` keys equal to
+  the configurable kinds, with `AsfUpdated` global only.
+- Token and command users stay in the environment (7.3, 7.4); the environment token wins. A token read
+  from the file does not log the IPC warning of section 11, because the file is not served by IPC.
+
 ### 7.3 Token from the environment
 
 `ASF_NOTIFIER_MATRIX_ACCESS_TOKEN`, when set and non-empty, wins over

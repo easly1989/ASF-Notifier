@@ -120,6 +120,36 @@ plugins are loaded; that is expected.
 The plugin reads one object, `ASFNotifier`, from `ASF.json` (global) and, optionally, from
 `config/<bot>.json` (per bot). With no `ASFNotifier` block the plugin logs one line and stays idle.
 
+### Settings file: `config/plugins/ASFNotifier.json`
+
+Since 1.2.0.0 the settings can live in one file instead, which a settings editor such as
+[ASF-PluginConfig](https://github.com/easly1989/ASF-PluginConfig) can show as a form (the plugin embeds
+its JSON Schema, `config.schema.json`). The file is optional; the keys below are the same.
+
+```json
+{
+  "formatVersion": 1,
+  "global": {
+    "Matrix": { "HomeserverUrl": "https://matrix.example.org", "RoomId": "!abc123:example.org" },
+    "Events": { "FarmingFinished": false }
+  },
+  "bots": {
+    "bot1": { "Enabled": true, "Events": { "BotStopped": true } }
+  }
+}
+```
+
+- `global` replaces the `ASFNotifier` key of `ASF.json`; `bots.<name>` replaces the `ASFNotifier`
+  key of `config/<name>.json`. A scope with a value in the file wins whole: the legacy key of that scope
+  is not merged in, and the plugin logs a warning that it is ignored. A scope the file does not have
+  still reads the legacy key.
+- A missing or empty file is silently skipped. An unreadable file, bad JSON or a `formatVersion` other
+  than `1` logs an error (never a value) and falls back to the legacy keys.
+- The file is read when ASF starts (`global`) and when a bot loads (`bots`), so a change needs an ASF restart.
+- The token and the command users stay in the environment ([below](#access-token), [commands](#commands-from-the-room)).
+  `Matrix.AccessToken` is accepted in the file, but the environment variable wins, and the file is
+  plain text; unlike `ASF.json` it is not served by ASF's IPC.
+
 ### Global: `ASF.json`
 
 ```json

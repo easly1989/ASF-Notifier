@@ -11,7 +11,7 @@ internal sealed class NotifierSettings {
 	private const int DefaultDisconnectedNotifyAfterMinutes = 5;
 	private const string ConfigKey = "ASFNotifier";
 
-	private static readonly Dictionary<string, NotificationKind> ConfigurableKinds = Enum.GetValues<NotificationKind>().Where(static kind => kind is not (NotificationKind.Suppressed or NotificationKind.Test or NotificationKind.CommandReply)).ToDictionary(static kind => kind.ToString(), static kind => kind, StringComparer.Ordinal);
+	internal static readonly Dictionary<string, NotificationKind> ConfigurableKinds = Enum.GetValues<NotificationKind>().Where(static kind => kind is not (NotificationKind.Suppressed or NotificationKind.Test or NotificationKind.CommandReply)).ToDictionary(static kind => kind.ToString(), static kind => kind, StringComparer.Ordinal);
 
 	internal string? AccessToken { get; private init; }
 
