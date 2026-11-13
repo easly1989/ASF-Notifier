@@ -11,7 +11,7 @@ internal sealed class NotifierSettings {
 	private const int DefaultDisconnectedNotifyAfterMinutes = 5;
 	private const string ConfigKey = "ASFNotifier";
 
-	private static readonly Dictionary<string, NotificationKind> ConfigurableKinds = Enum.GetValues<NotificationKind>().Where(static kind => kind is not (NotificationKind.Suppressed or NotificationKind.Test or NotificationKind.CommandReply)).ToDictionary(static kind => kind.ToString(), static kind => kind, StringComparer.Ordinal);
+	internal static readonly Dictionary<string, NotificationKind> ConfigurableKinds = Enum.GetValues<NotificationKind>().Where(static kind => kind is not (NotificationKind.Suppressed or NotificationKind.Test or NotificationKind.CommandReply)).ToDictionary(static kind => kind.ToString(), static kind => kind, StringComparer.Ordinal);
 
 	internal string? AccessToken { get; private init; }
 
@@ -29,19 +29,22 @@ internal sealed class NotifierSettings {
 	private static NotifierSettings Idle(string reason, bool enabled = true) => new() { Enabled = enabled, NotConfiguredReason = reason };
 
 	// Never put a config value, the token above all, into a log line: only key names
-	internal static NotifierSettings Parse(IReadOnlyDictionary<string, JsonElement>? additionalConfigProperties, string? environmentToken, INotifierLog log) {
+	// fromFile: the block is the global value of config/plugins/ASFNotifier.json, not the legacy key of ASF.json
+	internal static NotifierSettings Parse(IReadOnlyDictionary<string, JsonElement>? additionalConfigProperties, string? environmentToken, INotifierLog log, bool fromFile = false) {
 		ArgumentNullException.ThrowIfNull(log);
 
-		if ((additionalConfigProperties == null) || !additionalConfigProperties.TryGetValue(ConfigKey, out JsonElement block)) {
-			log.Info($"{ConfigKey} is not configured in ASF.json, the plugin stays idle");
+		string source = fromFile ? SettingsFile.FileName : "ASF.json";
 
-			return Idle($"{ConfigKey} block not found in ASF.json");
+		if ((additionalConfigProperties == null) || !additionalConfigProperties.TryGetValue(ConfigKey, out JsonElement block)) {
+			log.Info($"{ConfigKey} is not configured in {SettingsFile.FileName} or ASF.json, the plugin stays idle");
+
+			return Idle($"{ConfigKey} block not found in {SettingsFile.FileName} or ASF.json");
 		}
 
 		if (block.ValueKind != JsonValueKind.Object) {
-			log.Error($"{ConfigKey} in ASF.json must be a JSON object, the plugin stays idle");
+			log.Error($"{ConfigKey} in {source} must be a JSON object, the plugin stays idle");
 
-			return Idle($"{ConfigKey} in ASF.json is not a JSON object");
+			return Idle($"{ConfigKey} in {source} is not a JSON object");
 		}
 
 		string? homeserver = null;
@@ -68,15 +71,15 @@ internal sealed class NotifierSettings {
 
 		bool environmentWins = !string.IsNullOrWhiteSpace(environmentToken);
 
-		// IPC serves ASF.json whatever the plugin does with it, so warn before any early return
-		if (jsonToken != null) {
+		// IPC serves ASF.json whatever the plugin does with it, so warn before any early return; the plugin file is not served
+		if (!fromFile && (jsonToken != null)) {
 			log.Warning(environmentWins
 				? "ASF.json still contains Matrix.AccessToken; it is ignored but still served by GET /Api/ASF; delete it"
 				: $"The Matrix access token in ASF.json is exposed through ASF's IPC (GET /Api/ASF and ASF-ui); move it to the environment variable {EnvironmentTokenVariable}");
 		}
 
 		if (!ReadBool(block, "Enabled", true, log)) {
-			log.Info($"{ConfigKey} is disabled in ASF.json, the plugin stays idle");
+			log.Info($"{ConfigKey} is disabled in {source}, the plugin stays idle");
 
 			return Idle("Enabled is false", false);
 		}
@@ -88,7 +91,7 @@ internal sealed class NotifierSettings {
 			log.Info($"Matrix access token taken from the environment variable {EnvironmentTokenVariable}");
 		} else if (jsonToken != null) {
 			token = jsonToken;
-			log.Info("Matrix access token taken from ASF.json");
+			log.Info($"Matrix access token taken from {source}");
 		} else {
 			token = null;
 		}

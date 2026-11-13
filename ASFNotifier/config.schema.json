@@ -1,0 +1,100 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"title": "ASF-Notifier",
+	"description": "Sends ASF notifications to a Matrix room.",
+	"configKey": "ASFNotifier",
+	"storage": "file",
+	"formatVersion": 1,
+	"reload": "restart",
+	"global": {
+		"type": "object",
+		"properties": {
+			"Enabled": {
+				"type": "boolean",
+				"title": "Enabled",
+				"description": "false disables every notification. Default: true.",
+				"default": true
+			},
+			"Matrix": {
+				"type": "object",
+				"title": "Matrix",
+				"properties": {
+					"HomeserverUrl": {
+						"type": "string",
+						"format": "uri",
+						"title": "Homeserver URL",
+						"description": "Base URL of the Matrix homeserver, for example https://matrix.example.org."
+					},
+					"RoomId": {
+						"type": "string",
+						"title": "Room ID",
+						"description": "Room ID starting with '!', not an alias."
+					},
+					"AccessToken": {
+						"type": "string",
+						"title": "Access token",
+						"writeOnly": true,
+						"description": "Matrix access token. The environment variable ASF_NOTIFIER_MATRIX_ACCESS_TOKEN wins when it is set and non-empty; prefer it, because this value is stored in plain text."
+					},
+					"CommandRoomId": {
+						"type": "string",
+						"title": "Command room ID",
+						"description": "Room the commands are read in. Defaults to RoomId."
+					}
+				}
+			},
+			"DisconnectedNotifyAfterMinutes": {
+				"type": "integer",
+				"title": "Disconnected notify after (minutes)",
+				"description": "Minutes a bot stays disconnected before a BotDisconnected notification is sent.",
+				"minimum": 1,
+				"maximum": 1440,
+				"default": 5
+			},
+			"Events": {
+				"type": "object",
+				"title": "Events",
+				"description": "Turn single event kinds on or off. A kind that is not listed keeps the plugin default.",
+				"properties": {
+					"BotStoppedByAsf": { "type": "boolean", "title": "BotStoppedByAsf", "description": "ASF stopped a bot, for example after a login failure." },
+					"BotStopped": { "type": "boolean", "title": "BotStopped", "description": "A bot was stopped by hand or by a command." },
+					"BotDisconnected": { "type": "boolean", "title": "BotDisconnected", "description": "A bot stayed disconnected for DisconnectedNotifyAfterMinutes." },
+					"BotReconnected": { "type": "boolean", "title": "BotReconnected", "description": "A bot reconnected after a disconnected notification." },
+					"FarmingFinished": { "type": "boolean", "title": "FarmingFinished", "description": "Farming finished." },
+					"FarmingStarted": { "type": "boolean", "title": "FarmingStarted", "description": "Farming started." },
+					"FarmingStopped": { "type": "boolean", "title": "FarmingStopped", "description": "Farming stopped." },
+					"AsfUpdated": { "type": "boolean", "title": "AsfUpdated", "description": "ASF was updated." },
+					"AsfError": { "type": "boolean", "title": "AsfError", "description": "ASF or a bot logged an error." }
+				},
+				"additionalProperties": false
+			}
+		}
+	},
+	"bot": {
+		"type": "object",
+		"properties": {
+			"Enabled": {
+				"type": "boolean",
+				"title": "Enabled",
+				"description": "false disables the notifications of this bot. Default: true.",
+				"default": true
+			},
+			"Events": {
+				"type": "object",
+				"title": "Events",
+				"description": "Per-bot overrides of the global Events. A kind that is not listed inherits the global value.",
+				"properties": {
+					"BotStoppedByAsf": { "type": "boolean", "title": "BotStoppedByAsf", "description": "ASF stopped this bot, for example after a login failure." },
+					"BotStopped": { "type": "boolean", "title": "BotStopped", "description": "This bot was stopped by hand or by a command." },
+					"BotDisconnected": { "type": "boolean", "title": "BotDisconnected", "description": "This bot stayed disconnected for DisconnectedNotifyAfterMinutes." },
+					"BotReconnected": { "type": "boolean", "title": "BotReconnected", "description": "This bot reconnected after a disconnected notification." },
+					"FarmingFinished": { "type": "boolean", "title": "FarmingFinished", "description": "Farming finished on this bot." },
+					"FarmingStarted": { "type": "boolean", "title": "FarmingStarted", "description": "Farming started on this bot." },
+					"FarmingStopped": { "type": "boolean", "title": "FarmingStopped", "description": "Farming stopped on this bot." },
+					"AsfError": { "type": "boolean", "title": "AsfError", "description": "This bot logged an error." }
+				},
+				"additionalProperties": false
+			}
+		}
+	}
+}
